@@ -7,9 +7,14 @@ from app.schemas.tubehunt import (
     ChannelsListResponse,
     ChannelData,
     VideoData,
-    HealthCheckResponse
+    HealthCheckResponse,
+    JobStartResponse,
+    JobStatusResponse,
+    JobResultResponse,
+    JobErrorResponse
 )
 from app.services.tubehunt import TubeHuntService
+from app.core.job_queue import job_queue, JobStatus
 import logging
 import time
 from datetime import datetime
@@ -411,4 +416,178 @@ async def health() -> HealthCheckResponse:
             },
             uptime_seconds=time.time() - _startup_time,
             message=f"Erro crítico no health check: {str(e)}"
+        )
+
+
+@router.post("/scrape-channels/start", response_model=JobStartResponse)
+async def start_scrape_channels() -> JobStartResponse:
+    """
+    Iniciar job assíncrono de scraping de canais
+
+    ## Descrição
+    Este endpoint cria um job de scraping assíncrono que é executado em background.
+    Retorna um job_id que pode ser usado para consultar o status e resultado do scraping.
+
+    ## Fluxo
+    1. Endpoint retorna imediatamente com job_id
+    2. Scraping ocorre em background (não bloqueia a API)
+    3. Use GET /scrape-channels/result/{job_id} para consultar o resultado
+
+    ## Resposta bem-sucedida
+    ```json
+    {
+      "job_id": "550e8400-e29b-41d4-a716-446655440000",
+      "status": "pending",
+      "message": "Job enfileirado com sucesso",
+      "created_at": "2026-01-01T20:00:00.000000"
+    }
+    ```
+
+    ## Exemplo de uso
+    ```bash
+    # 1. Iniciar job
+    curl -X POST http://localhost:8000/api/v1/tubehunt/scrape-channels/start
+
+    # 2. Consultar resultado (após alguns minutos)
+    curl http://localhost:8000/api/v1/tubehunt/scrape-channels/result/{job_id}
+    ```
+    """
+    try:
+        logger.info("Requisição para iniciar scraping assíncrono de canais")
+
+        # Criar novo job
+        job_id = job_queue.create_job()
+        job = job_queue.get_job(job_id)
+
+        # Função que será executada em background
+        def scrape_task():
+            service = TubeHuntService()
+            service._create_driver()
+            try:
+                result = service.scrape_channels(wait_time=15)
+                return result
+            finally:
+                service.close()
+
+        # Iniciar tarefa em background
+        job_queue.start_background_task(job_id, scrape_task)
+
+        logger.info(f"Job de scraping iniciado: {job_id}")
+
+        return JobStartResponse(
+            job_id=job_id,
+            status="pending",
+            message="Job enfileirado com sucesso",
+            created_at=job.created_at,
+        )
+
+    except Exception as e:
+        logger.error(f"❌ Erro ao iniciar scraping assíncrono: {str(e)}", exc_info=True)
+        raise HTTPException(
+            status_code=500,
+            detail=f"Erro ao iniciar scraping: {str(e)}"
+        )
+
+
+@router.get("/scrape-channels/result/{job_id}")
+async def get_scrape_result(job_id: str):
+    """
+    Consultar resultado de um job de scraping
+
+    ## Descrição
+    Retorna o status e resultado de um job iniciado com POST /scrape-channels/start.
+
+    ## Estados Possíveis
+    - **pending**: Job enfileirado, não iniciado
+    - **processing**: Job em execução
+    - **completed**: Job concluído com sucesso
+    - **failed**: Job falhou
+
+    ## Exemplos de Resposta
+
+    ### Processando
+    ```json
+    {
+      "job_id": "550e8400-e29b-41d4-a716-446655440000",
+      "status": "processing",
+      "progress": 45,
+      "message": "Extraindo dados de canais... 45/50 concluído",
+      "started_at": "2026-01-01T20:01:00.000000"
+    }
+    ```
+
+    ### Completo
+    ```json
+    {
+      "job_id": "550e8400-e29b-41d4-a716-446655440000",
+      "status": "completed",
+      "result": {
+        "success": true,
+        "channels": [...],
+        "total_channels": 50,
+        "timestamp": "2026-01-01T20:15:30.000000",
+        "error": null
+      },
+      "execution_time_seconds": 330.5,
+      "completed_at": "2026-01-01T20:15:30.000000"
+    }
+    ```
+
+    ### Falhou
+    ```json
+    {
+      "job_id": "550e8400-e29b-41d4-a716-446655440000",
+      "status": "failed",
+      "error": "Erro ao fazer scraping: timeout na página",
+      "failed_at": "2026-01-01T20:10:00.000000"
+    }
+    ```
+    """
+    try:
+        logger.info(f"Consultando resultado do job: {job_id}")
+
+        # Obter job
+        job = job_queue.get_job(job_id)
+        if not job:
+            logger.warning(f"Job não encontrado: {job_id}")
+            raise HTTPException(status_code=404, detail=f"Job não encontrado: {job_id}")
+
+        # Retornar resposta apropriada baseada no status
+        if job.status == JobStatus.PENDING or job.status == JobStatus.PROCESSING:
+            return JobStatusResponse(
+                job_id=job_id,
+                status=job.status.value,
+                progress=job.progress,
+                message=job.message,
+                started_at=job.started_at,
+            )
+
+        elif job.status == JobStatus.COMPLETED:
+            execution_time = None
+            if job.started_at and job.completed_at:
+                execution_time = (job.completed_at - job.started_at).total_seconds()
+
+            return JobResultResponse(
+                job_id=job_id,
+                status=job.status.value,
+                result=job.result,
+                execution_time_seconds=execution_time,
+                completed_at=job.completed_at,
+            )
+
+        elif job.status == JobStatus.FAILED:
+            return JobErrorResponse(
+                job_id=job_id,
+                status=job.status.value,
+                error=job.error or "Erro desconhecido",
+                failed_at=job.completed_at,
+            )
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"❌ Erro ao consultar resultado: {str(e)}", exc_info=True)
+        raise HTTPException(
+            status_code=500,
+            detail=f"Erro ao consultar resultado: {str(e)}"
         )

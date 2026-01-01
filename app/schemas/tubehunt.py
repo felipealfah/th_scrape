@@ -204,3 +204,85 @@ class HealthCheckResponse(BaseModel):
                 "message": "API está funcionando corretamente com todos os serviços online"
             }
         }
+
+
+class JobStartResponse(BaseModel):
+    """Response ao iniciar um job de scraping"""
+    job_id: str = Field(..., description="ID único do job")
+    status: str = Field(..., description="Status inicial: pending")
+    message: str = Field(..., description="Mensagem de sucesso")
+    created_at: datetime = Field(..., description="Timestamp de criação do job")
+
+    class Config:
+        json_schema_extra = {
+            "example": {
+                "job_id": "550e8400-e29b-41d4-a716-446655440000",
+                "status": "pending",
+                "message": "Job enfileirado com sucesso",
+                "created_at": "2026-01-01T20:00:00.000000"
+            }
+        }
+
+
+class JobStatusResponse(BaseModel):
+    """Response com status de um job em progresso"""
+    job_id: str = Field(..., description="ID do job")
+    status: str = Field(..., description="Status: pending, processing, completed, failed")
+    progress: int = Field(..., description="Progresso em % (0-100)")
+    message: str = Field(..., description="Mensagem descritiva do status")
+    started_at: Optional[datetime] = Field(None, description="Timestamp de início")
+
+    class Config:
+        json_schema_extra = {
+            "example": {
+                "job_id": "550e8400-e29b-41d4-a716-446655440000",
+                "status": "processing",
+                "progress": 45,
+                "message": "Extraindo dados de canais... 45/50 concluído",
+                "started_at": "2026-01-01T20:01:00.000000"
+            }
+        }
+
+
+class JobResultResponse(BaseModel):
+    """Response com resultado completo de um job"""
+    job_id: str = Field(..., description="ID do job")
+    status: str = Field(..., description="Status final: completed")
+    result: Optional[dict] = Field(None, description="Resultado do scraping (ChannelsListResponse)")
+    execution_time_seconds: Optional[float] = Field(None, description="Tempo total de execução")
+    completed_at: Optional[datetime] = Field(None, description="Timestamp de conclusão")
+
+    class Config:
+        json_schema_extra = {
+            "example": {
+                "job_id": "550e8400-e29b-41d4-a716-446655440000",
+                "status": "completed",
+                "result": {
+                    "success": True,
+                    "channels": [],
+                    "total_channels": 50,
+                    "timestamp": "2026-01-01T20:15:30.000000",
+                    "error": None
+                },
+                "execution_time_seconds": 330.5,
+                "completed_at": "2026-01-01T20:15:30.000000"
+            }
+        }
+
+
+class JobErrorResponse(BaseModel):
+    """Response quando um job falha"""
+    job_id: str = Field(..., description="ID do job")
+    status: str = Field(..., description="Status final: failed")
+    error: str = Field(..., description="Mensagem de erro")
+    failed_at: Optional[datetime] = Field(None, description="Timestamp da falha")
+
+    class Config:
+        json_schema_extra = {
+            "example": {
+                "job_id": "550e8400-e29b-41d4-a716-446655440000",
+                "status": "failed",
+                "error": "Erro ao fazer scraping: timeout na página",
+                "failed_at": "2026-01-01T20:10:00.000000"
+            }
+        }
