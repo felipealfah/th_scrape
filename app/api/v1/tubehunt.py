@@ -348,10 +348,10 @@ async def health() -> HealthCheckResponse:
 
         # Verificar variáveis de ambiente
         try:
-            from app.config import settings
-            if (settings.tubehunt_url and
-                settings.tubehunt_user and
-                settings.tubehunt_password):
+            from app.core.config import settings
+            if (settings.url_login and
+                settings.user and
+                settings.password):
                 services["environment"] = "healthy"
                 logger.info("✅ Variáveis de ambiente carregadas")
             else:
