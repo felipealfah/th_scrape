@@ -178,3 +178,29 @@ class ChannelsListResponse(BaseModel):
                 "error": None
             }
         }
+
+
+class HealthCheckResponse(BaseModel):
+    """Response model para health check da API"""
+    status: str = Field(..., description="Status geral da API (ok, degraded, error)")
+    timestamp: datetime = Field(default_factory=datetime.utcnow, description="Timestamp do health check")
+    version: str = Field(default="1.5", description="Versão da API")
+    services: dict = Field(default_factory=dict, description="Status de cada serviço")
+    uptime_seconds: Optional[float] = Field(None, description="Tempo de uptime em segundos")
+    message: Optional[str] = Field(None, description="Mensagem adicional sobre o status")
+
+    class Config:
+        json_schema_extra = {
+            "example": {
+                "status": "ok",
+                "timestamp": "2026-01-01T20:00:00.000000",
+                "version": "1.5",
+                "services": {
+                    "api": "healthy",
+                    "selenium": "healthy",
+                    "docker": "healthy"
+                },
+                "uptime_seconds": 3600.5,
+                "message": "API está funcionando corretamente com todos os serviços online"
+            }
+        }

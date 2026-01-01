@@ -6,13 +6,19 @@ from app.schemas.tubehunt import (
     TubeHuntVideosResponse,
     ChannelsListResponse,
     ChannelData,
-    VideoData
+    VideoData,
+    HealthCheckResponse
 )
 from app.services.tubehunt import TubeHuntService
 import logging
+import time
+from datetime import datetime
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/tubehunt", tags=["tubehunt"])
+
+# Tracking startup time for uptime calculation
+_startup_time = time.time()
 
 
 @router.post("/login-and-scrape", response_model=TubeHuntLoginResponse)
@@ -270,11 +276,139 @@ async def scrape_channels() -> ChannelsListResponse:
         )
 
 
-@router.get("/health")
-async def health():
-    """Health check para TubeHunt service"""
-    return {
-        "status": "healthy",
-        "service": "tubehunt",
-        "message": "TubeHunt service is running"
+@router.get("/health", response_model=HealthCheckResponse)
+async def health() -> HealthCheckResponse:
+    """
+    Verificar saúde da API e de seus serviços
+
+    ## Descrição
+    Este endpoint realiza verificações de saúde da API e seus serviços.
+    Retorna o status geral, versão, tempo de uptime e status individual de cada serviço.
+
+    ## Status Possíveis
+    - **ok**: Todos os serviços estão funcionando corretamente
+    - **degraded**: Alguns serviços estão com problemas, mas API básica funciona
+    - **error**: Serviço principal indisponível
+
+    ## Exemplo de resposta bem-sucedida
+    ```json
+    {
+      "status": "ok",
+      "timestamp": "2026-01-01T20:00:00.000000",
+      "version": "1.5",
+      "services": {
+        "api": "healthy",
+        "selenium": "healthy",
+        "docker": "healthy"
+      },
+      "uptime_seconds": 3600.5,
+      "message": "API está funcionando corretamente com todos os serviços online"
     }
+    ```
+
+    ## Erros possíveis
+    - 200: Sempre retorna, mesmo com serviços degradados
+    """
+    try:
+        logger.info("Health check requisitado")
+
+        # Calcular uptime
+        uptime = time.time() - _startup_time
+
+        # Inicializar status dos serviços
+        services = {
+            "api": "healthy",
+            "selenium": "checking",
+            "docker": "checking",
+            "environment": "checking"
+        }
+
+        overall_status = "ok"
+        messages = []
+
+        # Verificar Selenium
+        try:
+            service = TubeHuntService()
+            # Apenas tenta criar driver sem fazer operações pesadas
+            driver = service.get_driver()
+            if driver:
+                services["selenium"] = "healthy"
+                logger.info("✅ Selenium está acessível")
+            else:
+                services["selenium"] = "warning"
+                overall_status = "degraded"
+                messages.append("Selenium WebDriver não respondeu")
+                logger.warning("⚠️ Selenium não respondeu")
+            service.close()
+        except Exception as e:
+            services["selenium"] = "error"
+            overall_status = "degraded"
+            messages.append(f"Erro ao verificar Selenium: {str(e)}")
+            logger.warning(f"⚠️ Erro ao verificar Selenium: {str(e)}")
+
+        # Verificar variáveis de ambiente
+        try:
+            from app.config import settings
+            if (settings.tubehunt_url and
+                settings.tubehunt_user and
+                settings.tubehunt_password):
+                services["environment"] = "healthy"
+                logger.info("✅ Variáveis de ambiente carregadas")
+            else:
+                services["environment"] = "warning"
+                overall_status = "degraded"
+                messages.append("Variáveis de ambiente incompletas")
+                logger.warning("⚠️ Variáveis de ambiente incompletas")
+        except Exception as e:
+            services["environment"] = "error"
+            overall_status = "degraded"
+            messages.append(f"Erro ao verificar ambiente: {str(e)}")
+            logger.warning(f"⚠️ Erro ao verificar ambiente: {str(e)}")
+
+        # Verificar Docker (se estiver rodando em Docker)
+        try:
+            import os
+            if os.path.exists("/.dockerenv"):
+                services["docker"] = "running"
+                logger.info("✅ Rodando em Docker")
+            else:
+                services["docker"] = "local"
+                logger.info("✅ Rodando localmente")
+        except Exception as e:
+            services["docker"] = "unknown"
+            logger.debug(f"Não foi possível verificar Docker: {str(e)}")
+
+        # Montar mensagem final
+        if overall_status == "ok":
+            message = "API está funcionando corretamente com todos os serviços online"
+        elif overall_status == "degraded":
+            message = f"API funcionando, mas alguns serviços têm problemas: {'; '.join(messages)}"
+        else:
+            message = f"Erro crítico: {'; '.join(messages)}"
+
+        logger.info(f"Health check completo: status={overall_status}")
+
+        return HealthCheckResponse(
+            status=overall_status,
+            timestamp=datetime.utcnow(),
+            version="1.5",
+            services=services,
+            uptime_seconds=uptime,
+            message=message
+        )
+
+    except Exception as e:
+        logger.error(f"❌ Erro durante health check: {str(e)}", exc_info=True)
+        return HealthCheckResponse(
+            status="error",
+            timestamp=datetime.utcnow(),
+            version="1.5",
+            services={
+                "api": "error",
+                "selenium": "unknown",
+                "docker": "unknown",
+                "environment": "unknown"
+            },
+            uptime_seconds=time.time() - _startup_time,
+            message=f"Erro crítico no health check: {str(e)}"
+        )
