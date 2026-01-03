@@ -24,7 +24,9 @@ RUN pip install --no-cache-dir \
     selenium>=4.15.2 \
     pydantic>=2.5.0 \
     pydantic-settings>=2.1.0 \
-    python-dotenv>=1.0.0
+    python-dotenv>=1.0.0 \
+    httpx>=0.25.2 \
+    requests>=2.31.0
 
 # Expose port for API
 EXPOSE 8000

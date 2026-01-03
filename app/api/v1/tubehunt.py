@@ -516,13 +516,8 @@ async def start_scrape_channels(request: ScrapeChannelsRequest = None) -> JobSta
             service = TubeHuntService()
             service._create_driver()
             try:
-                # Passar credenciais dinâmicas para o serviço
-                result = service.scrape_channels(
-                    wait_time=wait_time,
-                    login_url=login_url,
-                    username=username,
-                    password=password
-                )
+                # Chamar scrape_channels com apenas wait_time
+                result = service.scrape_channels(wait_time=wait_time)
                 return result
             finally:
                 service.close()
