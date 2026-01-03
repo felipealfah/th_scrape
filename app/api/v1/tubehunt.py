@@ -11,13 +11,17 @@ from app.schemas.tubehunt import (
     JobStartResponse,
     JobStatusResponse,
     JobResultResponse,
-    JobErrorResponse
+    JobErrorResponse,
+    ScrapeChannelsRequest,
+    WebhookPayload
 )
 from app.services.tubehunt import TubeHuntService
 from app.core.job_queue import job_queue, JobStatus
+from app.core.config import settings
 import logging
 import time
 from datetime import datetime
+from urllib.parse import urlparse
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/tubehunt", tags=["tubehunt"])
@@ -419,44 +423,92 @@ async def health() -> HealthCheckResponse:
         )
 
 
+def _validate_url(url: str) -> bool:
+    """Validar se URL é válida"""
+    try:
+        result = urlparse(url)
+        return all([result.scheme in ['http', 'https'], result.netloc])
+    except:
+        return False
+
+
 @router.post("/scrape-channels/start", response_model=JobStartResponse)
-async def start_scrape_channels() -> JobStartResponse:
+async def start_scrape_channels(request: ScrapeChannelsRequest = None) -> JobStartResponse:
     """
-    Iniciar job assíncrono de scraping de canais
+    Iniciar job assíncrono de scraping de canais com parâmetros dinâmicos
 
     ## Descrição
-    Este endpoint cria um job de scraping assíncrono que é executado em background.
-    Retorna um job_id que pode ser usado para consultar o status e resultado do scraping.
+    Este endpoint cria um job de scraping assíncrono executado em background.
+    Suporta credenciais e URLs dinâmicas (ou usa .env como fallback).
+    Opcionalmente dispara webhook callback quando job termina.
+
+    ## Parâmetros (todos opcionais, com fallback para .env)
+    - `login_url`: URL de login (default: .env)
+    - `scrape_url`: URL da página para scraping (default: .env)
+    - `username`: Email/usuário (default: .env)
+    - `password`: Senha (default: .env)
+    - `webhook_url`: URL para webhook callback (opcional)
+    - `wait_time`: Tempo de espera em segundos (default: 15)
 
     ## Fluxo
-    1. Endpoint retorna imediatamente com job_id
-    2. Scraping ocorre em background (não bloqueia a API)
-    3. Use GET /scrape-channels/result/{job_id} para consultar o resultado
-
-    ## Resposta bem-sucedida
-    ```json
-    {
-      "job_id": "550e8400-e29b-41d4-a716-446655440000",
-      "status": "pending",
-      "message": "Job enfileirado com sucesso",
-      "created_at": "2026-01-01T20:00:00.000000"
-    }
-    ```
+    1. POST retorna imediatamente com job_id
+    2. Scraping ocorre em background
+    3. GET /scrape-channels/result/{job_id} para consultar status
+    4. Webhook dispara quando job termina (se webhook_url fornecido)
 
     ## Exemplo de uso
     ```bash
-    # 1. Iniciar job
-    curl -X POST http://localhost:8000/api/v1/tubehunt/scrape-channels/start
-
-    # 2. Consultar resultado (após alguns minutos)
-    curl http://localhost:8000/api/v1/tubehunt/scrape-channels/result/{job_id}
+    curl -X POST http://localhost:8000/api/v1/tubehunt/scrape-channels/start \\
+      -H "Content-Type: application/json" \\
+      -d '{
+        "login_url": "https://app.tubehunt.io/login",
+        "scrape_url": "https://app.tubehunt.io/long",
+        "username": "seu@email.com",
+        "password": "sua_senha",
+        "webhook_url": "https://n8n.example.com/webhook/abc123",
+        "wait_time": 15
+      }'
     ```
     """
     try:
-        logger.info("Requisição para iniciar scraping assíncrono de canais")
+        # Usar valores padrão da request ou fallback para .env
+        if request is None:
+            request = ScrapeChannelsRequest()
 
-        # Criar novo job
-        job_id = job_queue.create_job()
+        login_url = request.login_url or settings.url_login
+        scrape_url = request.scrape_url or settings.url_login  # Para compatibilidade
+        username = request.username or settings.user
+        password = request.password or settings.password
+        webhook_url = request.webhook_url
+        wait_time = request.wait_time
+
+        # Validações
+        if not username or not password:
+            raise HTTPException(
+                status_code=400,
+                detail="Credenciais não fornecidas e não configuradas no .env"
+            )
+
+        if not _validate_url(login_url):
+            raise HTTPException(
+                status_code=400,
+                detail=f"login_url inválida: {login_url}"
+            )
+
+        if webhook_url and not _validate_url(webhook_url):
+            raise HTTPException(
+                status_code=400,
+                detail=f"webhook_url inválida: {webhook_url}"
+            )
+
+        logger.info(f"Requisição para iniciar scraping assíncrono de canais")
+        logger.info(f"  - Usuario: {username}")
+        logger.info(f"  - Login URL: {login_url}")
+        if webhook_url:
+            logger.info(f"  - Webhook: {webhook_url}")
+
+        # Criar novo job com webhook_url
+        job_id = job_queue.create_job(webhook_url=webhook_url)
         job = job_queue.get_job(job_id)
 
         # Função que será executada em background
@@ -464,7 +516,13 @@ async def start_scrape_channels() -> JobStartResponse:
             service = TubeHuntService()
             service._create_driver()
             try:
-                result = service.scrape_channels(wait_time=15)
+                # Passar credenciais dinâmicas para o serviço
+                result = service.scrape_channels(
+                    wait_time=wait_time,
+                    login_url=login_url,
+                    username=username,
+                    password=password
+                )
                 return result
             finally:
                 service.close()
@@ -481,6 +539,8 @@ async def start_scrape_channels() -> JobStartResponse:
             created_at=job.created_at,
         )
 
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"❌ Erro ao iniciar scraping assíncrono: {str(e)}", exc_info=True)
         raise HTTPException(

@@ -286,3 +286,62 @@ class JobErrorResponse(BaseModel):
                 "failed_at": "2026-01-01T20:10:00.000000"
             }
         }
+
+
+class ScrapeChannelsRequest(BaseModel):
+    """Request model para iniciar scraping de canais com parâmetros dinâmicos"""
+    # URLs (opcional, usa .env como fallback)
+    login_url: Optional[str] = Field(None, description="URL de login (fallback: .env)")
+    scrape_url: Optional[str] = Field(None, description="URL da página para scraping (fallback: .env)")
+
+    # Credenciais (opcional, usa .env como fallback)
+    username: Optional[str] = Field(None, description="Usuário/Email (fallback: .env)")
+    password: Optional[str] = Field(None, description="Senha (fallback: .env)")
+
+    # Webhook callback (opcional)
+    webhook_url: Optional[str] = Field(None, description="URL para webhook callback quando job terminar")
+
+    # Opções de scraping
+    wait_time: int = Field(default=15, ge=5, le=60, description="Tempo de espera em segundos")
+    extract_selector: str = Field(default="h1", description="Seletor CSS para extrair (default: h1)")
+
+    class Config:
+        json_schema_extra = {
+            "example": {
+                "login_url": "https://app.tubehunt.io/login",
+                "scrape_url": "https://app.tubehunt.io/long",
+                "username": "usuario@email.com",
+                "password": "senha123",
+                "webhook_url": "https://n8n.example.com/webhook/abc123",
+                "wait_time": 15,
+                "extract_selector": "h1"
+            }
+        }
+
+
+class WebhookPayload(BaseModel):
+    """Payload enviado para webhook quando job termina"""
+    job_id: str = Field(..., description="ID do job")
+    status: str = Field(..., description="Status final: 'completed' ou 'failed'")
+    result: Optional[dict] = Field(None, description="Resultado do scraping (ChannelsListResponse)")
+    execution_time_seconds: Optional[float] = Field(None, description="Tempo total de execução")
+    error: Optional[str] = Field(None, description="Mensagem de erro se falhou")
+    timestamp: datetime = Field(default_factory=datetime.utcnow, description="Timestamp do webhook")
+
+    class Config:
+        json_schema_extra = {
+            "example": {
+                "job_id": "550e8400-e29b-41d4-a716-446655440000",
+                "status": "completed",
+                "result": {
+                    "success": True,
+                    "channels": [],
+                    "total_channels": 50,
+                    "timestamp": "2026-01-01T20:15:30.000000",
+                    "error": None
+                },
+                "execution_time_seconds": 330.5,
+                "error": None,
+                "timestamp": "2026-01-01T20:15:31.000000"
+            }
+        }

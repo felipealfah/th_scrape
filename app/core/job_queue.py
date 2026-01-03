@@ -2,6 +2,8 @@
 import uuid
 import time
 import threading
+import requests
+import json
 from typing import Dict, Optional, Callable, Any
 from datetime import datetime
 from enum import Enum
@@ -21,8 +23,9 @@ class JobStatus(str, Enum):
 class Job:
     """Representa um job de scraping"""
 
-    def __init__(self, job_id: str):
+    def __init__(self, job_id: str, webhook_url: Optional[str] = None):
         self.job_id = job_id
+        self.webhook_url = webhook_url
         self.status = JobStatus.PENDING
         self.created_at = datetime.utcnow()
         self.started_at: Optional[datetime] = None
@@ -31,6 +34,7 @@ class Job:
         self.error: Optional[str] = None
         self.progress: int = 0  # 0-100
         self.message: str = "Job enfileirado"
+        self.webhook_attempts: int = 0  # Rastreamento de tentativas de webhook
 
     def to_dict(self) -> Dict[str, Any]:
         """Converter job para dicionário"""
@@ -54,14 +58,17 @@ class JobQueue:
         self.jobs: Dict[str, Job] = {}
         self._lock = threading.RLock()
 
-    def create_job(self) -> str:
+    def create_job(self, webhook_url: Optional[str] = None) -> str:
         """Criar novo job e retornar job_id"""
         job_id = str(uuid.uuid4())
-        job = Job(job_id)
+        job = Job(job_id, webhook_url=webhook_url)
 
         with self._lock:
             self.jobs[job_id] = job
-            logger.info(f"Job criado: {job_id}")
+            if webhook_url:
+                logger.info(f"Job criado: {job_id} (webhook: {webhook_url})")
+            else:
+                logger.info(f"Job criado: {job_id}")
 
         return job_id
 
@@ -119,6 +126,7 @@ class JobQueue:
             return
 
         def run_task():
+            start_time = time.time()
             try:
                 # Marcar como processando
                 self.update_job(job_id, status=JobStatus.PROCESSING, message="Iniciando scraping...")
@@ -136,6 +144,19 @@ class JobQueue:
                 )
                 logger.info(f"Job completo: {job_id}")
 
+                # Enviar webhook callback se configurado
+                if job.webhook_url:
+                    execution_time = time.time() - start_time
+                    payload = {
+                        "job_id": job_id,
+                        "status": "completed",
+                        "result": result,
+                        "execution_time_seconds": execution_time,
+                        "error": None,
+                        "timestamp": datetime.utcnow().isoformat()
+                    }
+                    self.send_webhook(job_id, payload)
+
             except Exception as e:
                 error_msg = str(e)
                 self.update_job(
@@ -145,6 +166,19 @@ class JobQueue:
                     message=f"Erro ao fazer scraping: {error_msg}",
                 )
                 logger.error(f"Job falhou: {job_id} - {error_msg}", exc_info=True)
+
+                # Enviar webhook callback com erro se configurado
+                if job.webhook_url:
+                    execution_time = time.time() - start_time
+                    payload = {
+                        "job_id": job_id,
+                        "status": "failed",
+                        "result": None,
+                        "execution_time_seconds": execution_time,
+                        "error": error_msg,
+                        "timestamp": datetime.utcnow().isoformat()
+                    }
+                    self.send_webhook(job_id, payload)
 
         # Executar em thread separada (daemon)
         thread = threading.Thread(target=run_task, daemon=True)
@@ -157,6 +191,48 @@ class JobQueue:
             if status:
                 return [job for job in self.jobs.values() if job.status == status]
             return list(self.jobs.values())
+
+    def send_webhook(self, job_id: str, payload: Dict[str, Any]) -> bool:
+        """Enviar webhook callback com retry logic (3 tentativas com backoff exponencial)"""
+        job = self.get_job(job_id)
+        if not job or not job.webhook_url:
+            return False
+
+        max_retries = 3
+        retry_delay = 1  # segundos
+
+        for attempt in range(1, max_retries + 1):
+            try:
+                logger.info(f"Enviando webhook para {job.webhook_url} (tentativa {attempt}/{max_retries})")
+
+                response = requests.post(
+                    job.webhook_url,
+                    json=payload,
+                    timeout=10,
+                    headers={"Content-Type": "application/json"}
+                )
+
+                if response.status_code in [200, 201, 202, 204]:
+                    logger.info(f"✅ Webhook enviado com sucesso para {job.webhook_url}")
+                    job.webhook_attempts = attempt
+                    return True
+                else:
+                    logger.warning(f"Webhook retornou status {response.status_code}")
+
+            except requests.exceptions.Timeout:
+                logger.warning(f"Webhook timeout (tentativa {attempt}/{max_retries})")
+            except requests.exceptions.ConnectionError:
+                logger.warning(f"Webhook connection error (tentativa {attempt}/{max_retries})")
+            except Exception as e:
+                logger.warning(f"Webhook error: {str(e)} (tentativa {attempt}/{max_retries})")
+
+            # Aguardar antes de retry (backoff exponencial)
+            if attempt < max_retries:
+                time.sleep(retry_delay)
+                retry_delay *= 2  # 1s, 2s, 4s
+
+        logger.error(f"❌ Falha ao enviar webhook após {max_retries} tentativas")
+        return False
 
     def cleanup_old_jobs(self, max_age_hours: int = 24) -> int:
         """Remover jobs antigos (> max_age_hours). Retorna número de jobs removidos"""
