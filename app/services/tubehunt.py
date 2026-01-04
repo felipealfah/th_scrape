@@ -1,29 +1,25 @@
-"""Serviço de automação de login e scrape no TubeHunt"""
+"""Serviço de automação de login e scrape no TubeHunt usando Playwright"""
 import logging
 import time
 from typing import Optional, Dict, Any
-from selenium import webdriver
-from selenium.webdriver.remote.webdriver import WebDriver
-from selenium.webdriver.common.by import By
-from selenium.webdriver.support.ui import WebDriverWait
-from selenium.webdriver.support import expected_conditions as EC
-from selenium.webdriver.chrome.options import Options
+from playwright.sync_api import Page
+from app.core.browser import PlaywrightBrowserManager
 from app.core.config import settings
 
 logger = logging.getLogger(__name__)
 
 
 class TubeHuntService:
-    """Serviço para automatizar login e extração de dados do TubeHunt"""
+    """Serviço para automatizar login e extração de dados do TubeHunt com Playwright"""
 
     def __init__(self):
         """Inicializar serviço com configurações"""
         self.login_url = settings.url_login
         self.username = settings.user
         self.password = settings.password
-        self.selenium_url = settings.SELENIUM_URL
         self.timeout = settings.SELENIUM_TIMEOUT
-        self.driver: Optional[WebDriver] = None
+        self.browser_manager: Optional[PlaywrightBrowserManager] = None
+        self.page: Optional[Page] = None
 
     def __enter__(self):
         """Context manager entry"""
@@ -34,81 +30,67 @@ class TubeHuntService:
         """Context manager exit"""
         self.close()
 
-    def _create_driver(self) -> WebDriver:
-        """Criar WebDriver remoto ou local"""
+    def _create_driver(self) -> Page:
+        """Criar navegador Playwright"""
         try:
-            # Configurar opções do Chrome
-            chrome_options = Options()
-            chrome_options.add_argument("--no-sandbox")
-            chrome_options.add_argument("--disable-dev-shm-usage")
-            if settings.SELENIUM_HEADLESS:
-                chrome_options.add_argument("--headless")
-
-            logger.info(f"Conectando ao Selenium: {self.selenium_url}")
-
-            # Tentar conexão remota primeiro
-            try:
-                self.driver = webdriver.Remote(
-                    command_executor=self.selenium_url,
-                    options=chrome_options
-                )
-                logger.info("✅ WebDriver remoto criado")
-            except Exception as e:
-                # Se falhar, usar WebDriver local
-                logger.warning(f"Falha na conexão remota ({self.selenium_url}): {e}")
-                logger.info("Tentando WebDriver local...")
-                self.driver = webdriver.Chrome(options=chrome_options)
-                logger.info("✅ WebDriver local criado")
-
-            return self.driver
+            logger.info("Lançando navegador Playwright...")
+            self.browser_manager = PlaywrightBrowserManager(
+                headless=settings.SELENIUM_HEADLESS,
+                browser_type="chromium"
+            )
+            self.page = self.browser_manager.launch()
+            logger.info("✅ Navegador Playwright criado")
+            return self.page
 
         except Exception as e:
-            logger.error(f"❌ Erro ao criar WebDriver: {str(e)}")
+            logger.error(f"❌ Erro ao criar navegador: {str(e)}")
+            self.close()
             raise
 
-    def get_driver(self) -> WebDriver:
-        """Obter ou criar WebDriver"""
-        if self.driver is None:
+    def get_page(self) -> Page:
+        """Obter ou criar página Playwright"""
+        if self.page is None:
             self._create_driver()
-        return self.driver
+        return self.page
 
     def close(self):
-        """Fechar WebDriver"""
-        if self.driver:
+        """Fechar navegador Playwright"""
+        if self.browser_manager:
             try:
-                self.driver.quit()
-                logger.info("✅ WebDriver fechado")
+                self.browser_manager.close()
+                logger.info("✅ Navegador fechado")
             except Exception as e:
-                logger.error(f"Erro ao fechar WebDriver: {str(e)}")
+                logger.error(f"Erro ao fechar navegador: {str(e)}")
             finally:
-                self.driver = None
+                self.browser_manager = None
+                self.page = None
 
     def _access_login_page(self):
         """1. Acessar página de login"""
         logger.info(f"Acessando página de login: {self.login_url}")
-        driver = self.get_driver()
-        driver.get(self.login_url)
+        page = self.get_page()
+        page.goto(self.login_url, timeout=120000)
         time.sleep(2)
         logger.info("✅ Página de login carregada")
 
     def _find_email_field(self) -> Any:
         """2. Localizar campo de email"""
         logger.info("Localizando campo de email...")
-        driver = self.get_driver()
+        page = self.get_page()
 
         email_selectors = [
-            (By.ID, "email"),
-            (By.NAME, "email"),
-            (By.XPATH, "//input[@type='email']"),
-            (By.CSS_SELECTOR, "input[type='email']"),
+            "#email",
+            "input[name='email']",
+            "input[type='email']",
         ]
 
-        for by, selector in email_selectors:
+        for selector in email_selectors:
             try:
-                email_input = driver.find_element(by, selector)
-                logger.info(f"✅ Campo de email encontrado: {by}={selector}")
-                return email_input
-            except:
+                element = page.query_selector(selector)
+                if element:
+                    logger.info(f"✅ Campo de email encontrado: {selector}")
+                    return element
+            except Exception:
                 continue
 
         logger.error("❌ Campo de email não encontrado")
@@ -117,21 +99,21 @@ class TubeHuntService:
     def _find_password_field(self) -> Any:
         """3. Localizar campo de password"""
         logger.info("Localizando campo de password...")
-        driver = self.get_driver()
+        page = self.get_page()
 
         password_selectors = [
-            (By.ID, "password"),
-            (By.NAME, "password"),
-            (By.XPATH, "//input[@type='password']"),
-            (By.CSS_SELECTOR, "input[type='password']"),
+            "#password",
+            "input[name='password']",
+            "input[type='password']",
         ]
 
-        for by, selector in password_selectors:
+        for selector in password_selectors:
             try:
-                password_input = driver.find_element(by, selector)
-                logger.info(f"✅ Campo de password encontrado: {by}={selector}")
-                return password_input
-            except:
+                element = page.query_selector(selector)
+                if element:
+                    logger.info(f"✅ Campo de password encontrado: {selector}")
+                    return element
+            except Exception:
                 continue
 
         logger.error("❌ Campo de password não encontrado")
@@ -140,40 +122,39 @@ class TubeHuntService:
     def _fill_credentials(self):
         """4. Preencher email e password"""
         logger.info("Preenchendo credenciais...")
+        page = self.get_page()
 
-        # Email
-        email_input = self._find_email_field()
-        email_input.clear()
-        email_input.send_keys(self.username)
+        # Preencher email
+        email_field = self._find_email_field()
+        page.fill("input[type='email']", self.username)
         time.sleep(1)
         logger.info(f"✅ Email preenchido: {self.username}")
 
-        # Password
-        password_input = self._find_password_field()
-        password_input.clear()
-        password_input.send_keys(self.password)
+        # Preencher password
+        password_field = self._find_password_field()
+        page.fill("input[type='password']", self.password)
         time.sleep(1)
         logger.info("✅ Password preenchido")
 
     def _find_submit_button(self) -> Any:
         """5. Localizar botão de submit"""
         logger.info("Localizando botão de submit...")
-        driver = self.get_driver()
+        page = self.get_page()
 
         submit_selectors = [
-            (By.XPATH, "//button[@type='submit']"),
-            (By.XPATH, "//button[contains(text(), 'Login')]"),
-            (By.XPATH, "//button[contains(text(), 'login')]"),
-            (By.XPATH, "//button[contains(text(), 'Entrar')]"),
-            (By.CSS_SELECTOR, "button[type='submit']"),
+            "button[type='submit']",
+            "button:has-text('Login')",
+            "button:has-text('login')",
+            "button:has-text('Entrar')",
         ]
 
-        for by, selector in submit_selectors:
+        for selector in submit_selectors:
             try:
-                button = driver.find_element(by, selector)
-                logger.info(f"✅ Botão encontrado: {by}={selector}")
-                return button
-            except:
+                element = page.query_selector(selector)
+                if element:
+                    logger.info(f"✅ Botão encontrado: {selector}")
+                    return element
+            except Exception:
                 continue
 
         logger.error("❌ Botão de submit não encontrado")
@@ -182,18 +163,18 @@ class TubeHuntService:
     def _submit_form(self):
         """6. Submeter formulário"""
         logger.info("Submetendo formulário...")
-        submit_button = self._find_submit_button()
-        submit_button.click()
+        page = self.get_page()
+        page.click("button[type='submit']")
         time.sleep(2)
         logger.info("✅ Formulário submetido")
 
     def _wait_for_redirect(self):
         """7. Aguardar redirecionamento"""
         logger.info(f"Aguardando redirecionamento (timeout: {self.timeout}s)...")
-        time.sleep(3)  # Dar tempo para redirecionar
+        time.sleep(3)
 
-        driver = self.get_driver()
-        current_url = driver.current_url
+        page = self.get_page()
+        current_url = page.url
         logger.info(f"✅ URL atual: {current_url}")
 
         if self.login_url in current_url:
@@ -204,37 +185,35 @@ class TubeHuntService:
     def _extract_element(self, selector: str) -> Optional[str]:
         """8. Extrair elemento selecionado"""
         logger.info(f"Extraindo elemento: {selector}")
-        driver = self.get_driver()
+        page = self.get_page()
 
         try:
-            # Se for um seletor CSS padrão (ex: h1, .class, #id)
+            # Converter seletores CSS simples
             if selector.startswith("#"):
-                elements = driver.find_elements(By.ID, selector[1:])
+                css_selector = selector
             elif selector.startswith("."):
-                elements = driver.find_elements(By.CLASS_NAME, selector[1:])
+                css_selector = selector
             else:
-                # Assumir que é um tag name (h1, h2, etc)
-                elements = driver.find_elements(By.TAG_NAME, selector)
+                # Assumir que é um tag name
+                css_selector = selector
 
-            if not elements:
-                # Tentar como CSS selector genérico
-                elements = driver.find_elements(By.CSS_SELECTOR, selector)
+            element = page.query_selector(css_selector)
 
-            if elements:
-                text = elements[0].text
+            if element:
+                text = element.text_content()
                 logger.info(f"✅ Elemento extraído: '{text}'")
                 return text
             else:
                 logger.warning(f"⚠️ Elemento '{selector}' não encontrado")
                 # Retornar title como fallback
-                fallback = driver.title
+                fallback = page.title()
                 logger.info(f"✅ Usando title como fallback: '{fallback}'")
                 return fallback
 
         except Exception as e:
             logger.warning(f"Erro ao extrair elemento: {e}")
             # Retornar title como fallback
-            fallback = driver.title
+            fallback = page.title()
             logger.info(f"✅ Usando title como fallback: '{fallback}'")
             return fallback
 
@@ -249,8 +228,8 @@ class TubeHuntService:
             Dicionário com informações da página de vídeos
         """
         try:
-            # Garantir que o driver foi criado
-            self.get_driver()
+            # Garantir que a página foi criada
+            self.get_page()
 
             # 1. Fazer login
             self._access_login_page()
@@ -262,11 +241,10 @@ class TubeHuntService:
             videos_url = "https://app.tubehunt.io/long/?page=1&OrderBy=DateDESC&ChangePerPage=50"
             logger.info(f"Navegando para página de vídeos: {videos_url}")
 
-            driver = self.get_driver()
-            driver.set_page_load_timeout(120)  # 2 minutos
+            page = self.get_page()
 
             try:
-                driver.get(videos_url)
+                page.goto(videos_url, timeout=120000)
                 logger.info("✅ Página de vídeos acessada")
             except Exception as e:
                 logger.warning(f"⚠️ Timeout ao acessar página, continuando: {e}")
@@ -274,13 +252,11 @@ class TubeHuntService:
 
             # 3. Aguardar carregamento
             logger.info("Aguardando carregamento da página...")
-            wait = WebDriverWait(driver, wait_time)
 
             try:
-                # Esperar por elementos de vídeo
-                wait.until(EC.presence_of_all_elements_located((By.XPATH, "//*[contains(@class, 'item')]")))
+                page.wait_for_selector(".item", timeout=wait_time * 1000)
                 logger.info("✅ Items carregados")
-            except:
+            except Exception:
                 logger.warning("⚠️ Timeout aguardando items, continuando")
 
             time.sleep(2)
@@ -288,13 +264,13 @@ class TubeHuntService:
             # 4. Extrair informações da página
             logger.info("Extraindo informações da página...")
 
-            video_elements = driver.find_elements(By.XPATH, "//*[contains(@class, 'video')]")
-            links = driver.find_elements(By.TAG_NAME, "a")
-            images = driver.find_elements(By.TAG_NAME, "img")
-            buttons = driver.find_elements(By.TAG_NAME, "button")
+            video_elements = page.query_selector_all(".video")
+            links = page.query_selector_all("a")
+            images = page.query_selector_all("img")
+            buttons = page.query_selector_all("button")
 
-            current_url = driver.current_url
-            page_title = driver.title
+            current_url = page.url
+            page_title = page.title()
 
             logger.info("✅ Informações extraídas com sucesso")
 
@@ -325,42 +301,38 @@ class TubeHuntService:
     def _extract_channel_data(self, channel_card) -> Dict[str, Any]:
         """Extrair dados de um card de canal individual"""
         try:
+            page = self.get_page()
+
             # Informações básicas
-            channel_name_elem = channel_card.find_element(By.CSS_SELECTOR, "a.fw-semibold.fs-4")
-            channel_name = channel_name_elem.text
-            channel_link = channel_name_elem.get_attribute("href")
+            channel_name_elem = channel_card.query_selector("a.fw-semibold.fs-4")
+            channel_name = channel_name_elem.text_content() if channel_name_elem else "N/A"
+            channel_link = channel_name_elem.get_attribute("href") if channel_name_elem else "N/A"
 
             # Handle (@) do canal
-            channel_handle_elem = channel_card.find_element(By.CSS_SELECTOR, ".small .fw-bold")
-            channel_handle = channel_handle_elem.text
+            channel_handle_elem = channel_card.query_selector(".small .fw-bold")
+            channel_handle = channel_handle_elem.text_content() if channel_handle_elem else "N/A"
 
             # País
-            country_elem = channel_card.find_element(By.CSS_SELECTOR, ".country")
-            country = country_elem.text.strip()
+            country_elem = channel_card.query_selector(".country")
+            country = country_elem.text_content().strip() if country_elem else "N/A"
 
             # Inscritos
-            subscribers_text = channel_card.find_element(By.CSS_SELECTOR, ".small.text-secondary").text
-            # Extrai "2k inscritos" de um texto como "@latelyfashionable • 2k inscritos • ..."
-            subscribers = subscribers_text.split("•")[1].strip().replace("inscritos", "").strip()
+            subscribers_elem = channel_card.query_selector(".small.text-secondary")
+            subscribers_text = subscribers_elem.text_content() if subscribers_elem else ""
+            subscribers = (
+                subscribers_text.split("•")[1].strip().replace("inscritos", "").strip()
+                if "•" in subscribers_text
+                else "N/A"
+            )
 
             # Verificado (presença do ícone)
-            is_verified = False
-            try:
-                channel_card.find_element(By.CSS_SELECTOR, "i.bi-patch-check-fill")
-                is_verified = True
-            except:
-                pass
+            is_verified = bool(channel_card.query_selector("i.bi-patch-check-fill"))
 
             # Monetizado (presença do ícone)
-            is_monetized = False
-            try:
-                channel_card.find_element(By.CSS_SELECTOR, "i.bi-currency-dollar")
-                is_monetized = True
-            except:
-                pass
+            is_monetized = bool(channel_card.query_selector("i.bi-currency-dollar"))
 
             # Extrair stats cards
-            stat_cards = channel_card.find_elements(By.CSS_SELECTOR, ".stat-card")
+            stat_cards = channel_card.query_selector_all(".stat-card")
             stats = {}
             stat_labels = [
                 "total_views",
@@ -374,40 +346,39 @@ class TubeHuntService:
             for idx, label in enumerate(stat_labels):
                 try:
                     if idx < len(stat_cards):
-                        stat_value = stat_cards[idx].find_element(By.CSS_SELECTOR, ".fs-4.fw-semibold").text
+                        stat_value_elem = stat_cards[idx].query_selector(".fs-4.fw-semibold")
+                        stat_value = stat_value_elem.text_content() if stat_value_elem else "N/A"
                         stats[label] = stat_value
                     else:
                         stats[label] = "N/A"
-                except:
+                except Exception:
                     stats[label] = "N/A"
 
             # Extrair vídeos
             recent_videos = []
-            video_elements = channel_card.find_elements(By.CSS_SELECTOR, ".entry-video")
+            video_elements = channel_card.query_selector_all(".entry-video")
 
             for video_elem in video_elements:
                 try:
-                    video_link_elem = video_elem.find_element(By.CSS_SELECTOR, "a")
-                    video_link = video_link_elem.get_attribute("href")
+                    video_link_elem = video_elem.query_selector("a")
+                    video_link = video_link_elem.get_attribute("href") if video_link_elem else "N/A"
 
-                    thumbnail_elem = video_elem.find_element(By.CSS_SELECTOR, ".video-thumb")
-                    thumbnail_url = thumbnail_elem.get_attribute("src")
+                    thumbnail_elem = video_elem.query_selector(".video-thumb")
+                    thumbnail_url = thumbnail_elem.get_attribute("src") if thumbnail_elem else "N/A"
 
                     # Duração
                     duration = "N/A"
-                    try:
-                        duration_elem = video_elem.find_element(By.CSS_SELECTOR, ".duration")
-                        duration = duration_elem.text
-                    except:
-                        pass
+                    duration_elem = video_elem.query_selector(".duration")
+                    if duration_elem:
+                        duration = duration_elem.text_content()
 
                     # Título
-                    title_elem = video_elem.find_element(By.CSS_SELECTOR, ".mt-2.mb-2.text-dark.fw-semibold.small")
-                    title = title_elem.text
+                    title_elem = video_elem.query_selector(".mt-2.mb-2.text-dark.fw-semibold.small")
+                    title = title_elem.text_content() if title_elem else "N/A"
 
-                    # Stats do vídeo (views, comentários, tempo)
-                    stats_text = video_elem.find_element(By.CSS_SELECTOR, ".small.text-secondary").text
-                    # Formato: "2k views • 3 comentários • há 1 mês"
+                    # Stats do vídeo
+                    stats_elem = video_elem.query_selector(".small.text-secondary")
+                    stats_text = stats_elem.text_content() if stats_elem else ""
                     parts = [p.strip() for p in stats_text.split("•")]
 
                     views = parts[0].replace("views", "").strip() if len(parts) > 0 else "N/A"
@@ -441,7 +412,7 @@ class TubeHuntService:
                 "time_since_first_video": stats.get("time_since_first_video", "N/A"),
                 "total_videos": stats.get("total_videos", "N/A"),
                 "outlier_score": stats.get("outlier_score", "N/A"),
-                "recent_videos": recent_videos[:6]  # Limitar a 6 vídeos
+                "recent_videos": recent_videos[:6]
             }
 
         except Exception as e:
@@ -459,8 +430,8 @@ class TubeHuntService:
             Dicionário com lista de canais e informações
         """
         try:
-            # Garantir que o driver foi criado
-            self.get_driver()
+            # Garantir que a página foi criada
+            self.get_page()
 
             # 1. Fazer login
             self._access_login_page()
@@ -470,14 +441,12 @@ class TubeHuntService:
 
             # 2. Aguardar carregamento completo da página principal
             logger.info("Aguardando carregamento completo da página principal...")
-            driver = self.get_driver()
-            wait = WebDriverWait(driver, wait_time)
+            page = self.get_page()
 
             try:
-                # Esperar por algum elemento principal ser visível
-                wait.until(EC.presence_of_all_elements_located((By.CSS_SELECTOR, ".container, main, .page")))
+                page.wait_for_selector(".container, main, .page", timeout=wait_time * 1000)
                 logger.info("✅ Página principal carregada")
-            except:
+            except Exception:
                 logger.warning("⚠️ Timeout aguardando página principal, continuando...")
 
             time.sleep(2)
@@ -486,10 +455,8 @@ class TubeHuntService:
             channels_url = "https://app.tubehunt.io/long/?page=1&OrderBy=DateDESC&ChangePerPage=50"
             logger.info(f"Navegando para página de canais: {channels_url}")
 
-            driver.set_page_load_timeout(120)  # 2 minutos
-
             try:
-                driver.get(channels_url)
+                page.goto(channels_url, timeout=120000)
                 logger.info("✅ Página de canais acessada")
             except Exception as e:
                 logger.warning(f"⚠️ Timeout ao acessar página, continuando: {e}")
@@ -497,12 +464,11 @@ class TubeHuntService:
 
             # 4. Aguardar carregamento da página de canais
             logger.info("Aguardando carregamento da página de canais...")
-            wait = WebDriverWait(driver, wait_time)
 
             try:
-                wait.until(EC.presence_of_all_elements_located((By.CSS_SELECTOR, ".channel-card")))
+                page.wait_for_selector(".channel-card", timeout=wait_time * 1000)
                 logger.info("✅ Canais carregados")
-            except:
+            except Exception:
                 logger.warning("⚠️ Timeout aguardando canais, continuando...")
 
             time.sleep(2)
@@ -510,7 +476,7 @@ class TubeHuntService:
             # 5. Extrair dados de todos os canais
             logger.info("Extraindo dados dos canais...")
             channels = []
-            channel_cards = driver.find_elements(By.CSS_SELECTOR, ".channel-card")
+            channel_cards = page.query_selector_all(".channel-card")
 
             logger.info(f"Encontrados {len(channel_cards)} canais para extrair")
 
@@ -529,7 +495,7 @@ class TubeHuntService:
                 "success": True,
                 "channels": channels,
                 "total_channels": len(channels),
-                "url": driver.current_url,
+                "url": page.url,
                 "error": None,
             }
 
@@ -555,8 +521,8 @@ class TubeHuntService:
             Dicionário com resultado da operação
         """
         try:
-            # Garantir que o driver foi criado
-            self.get_driver()
+            # Garantir que a página foi criada
+            self.get_page()
 
             # 1. Acessar página de login
             self._access_login_page()

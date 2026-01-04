@@ -10,25 +10,8 @@ services:
       - "8000:8000"
     environment:
       - PYTHONUNBUFFERED=1
-      - SELENIUM_URL=http://localhost:4444
-    depends_on:
-      - selenium-chrome
     volumes:
       - ./app:/app/app
-    networks:
-      - scraper-network
-
-  selenium-chrome:
-    image: selenium/standalone-chrome:4.15.0
-    container_name: selenium-chrome
-    ports:
-      - "4444:4444"
-      - "7900:7900"  # VNC port for debugging
-    environment:
-      - SE_NODE_SESSION_TIMEOUT=300
-      - SE_SESSION_REQUEST_TIMEOUT=300
-      - SE_NODE_MAX_SESSIONS=5
-    shm_size: 2gb  # Increased shared memory for Chrome
     networks:
       - scraper-network
     platform: linux/amd64  # Force AMD64 for Mac M1/M2/M3
