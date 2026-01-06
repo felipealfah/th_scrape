@@ -70,6 +70,6 @@ EXPOSE 8000
 
 # Run the FastAPI application with optimized settings for production
 # --workers: single worker to reduce memory consumption
-# --timeout: 300 seconds for long-running scraping jobs
-# --keep-alive: 75 seconds for connection reuse
-CMD ["/root/.local/bin/uv", "run", "uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000", "--workers", "1", "--timeout", "300"]
+# --timeout-keep-alive: 75 seconds for connection reuse
+# --ws-ping-timeout: 20 seconds for websocket ping timeout
+CMD ["/root/.local/bin/uv", "run", "uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000", "--workers", "1", "--timeout-keep-alive", "75"]
