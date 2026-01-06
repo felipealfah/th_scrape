@@ -70,7 +70,12 @@ class TubeHuntService:
         logger.info(f"Acessando página de login: {self.login_url}")
         page = self.get_page()
         page.goto(self.login_url, timeout=120000)
-        time.sleep(2)
+        # Esperar formulário de login carregar
+        try:
+            page.wait_for_selector("input[type='email']", timeout=30000)
+        except:
+            logger.warning("⚠️ Formulário não carregou no tempo esperado, continuando...")
+        time.sleep(3)
         logger.info("✅ Página de login carregada")
 
     def _find_email_field(self) -> Any:
@@ -126,14 +131,14 @@ class TubeHuntService:
 
         # Preencher email
         email_field = self._find_email_field()
-        page.fill("input[type='email']", self.username)
-        time.sleep(1)
+        email_field.fill(self.username)
+        time.sleep(2)
         logger.info(f"✅ Email preenchido: {self.username}")
 
         # Preencher password
         password_field = self._find_password_field()
-        page.fill("input[type='password']", self.password)
-        time.sleep(1)
+        password_field.fill(self.password)
+        time.sleep(2)
         logger.info("✅ Password preenchido")
 
     def _find_submit_button(self) -> Any:
@@ -164,21 +169,59 @@ class TubeHuntService:
         """6. Submeter formulário"""
         logger.info("Submetendo formulário...")
         page = self.get_page()
-        page.click("button[type='submit']")
-        time.sleep(2)
-        logger.info("✅ Formulário submetido")
+        submit_button = self._find_submit_button()
 
-    def _wait_for_redirect(self):
-        """7. Aguardar redirecionamento"""
-        logger.info(f"Aguardando redirecionamento (timeout: {self.timeout}s)...")
+        # Esperar botão estar visível e interativo antes de clicar
+        try:
+            page.wait_for_selector("button[type='submit']:enabled", timeout=10000)
+        except:
+            logger.warning("⚠️ Botão não ficou habilitado, tentando mesmo assim...")
+
+        # Clicar no botão SEM aguardar navegação
+        # Usar no_wait_after=True para não aguardar a navegação que pode levar muito tempo
+        logger.info("Clicando no botão de login...")
+        submit_button.click(no_wait_after=True)
+        logger.info("✅ Formulário submetido (aguardando redirecionamento...)")
+
+        # Aguardar um pouco para navegação ser iniciada
         time.sleep(3)
 
+    def _wait_for_redirect(self):
+        """7. Aguardar redirecionamento - verificar se login foi bem-sucedido"""
+        logger.info(f"Aguardando redirecionamento do login...")
         page = self.get_page()
-        current_url = page.url
-        logger.info(f"✅ URL atual: {current_url}")
 
-        if self.login_url in current_url:
-            logger.warning("⚠️ Ainda na página de login - possível falha de login")
+        # Aguardar a página mudar de URL (sinal de que login foi processado)
+        max_wait = 30  # segundos (reducido pois o click já esperou)
+        start_time = time.time()
+        login_url_initial = page.url
+
+        while time.time() - start_time < max_wait:
+            current_url = page.url
+            logger.info(f"URL atual: {current_url}")
+
+            # Se saiu da página de login E não tem erro, login foi bem-sucedido
+            if "login" not in current_url.lower() and "error" not in current_url.lower():
+                logger.info(f"✅ Login realizado com sucesso! Redirecionado para: {current_url}")
+                time.sleep(2)
+                return current_url
+
+            # Se tem erro na URL, login falhou
+            if "error" in current_url.lower():
+                logger.error(f"❌ Erro detectado na URL: {current_url}")
+                return current_url
+
+            time.sleep(1)
+
+        # Se chegou aqui e ainda está em login, tenta aguardar page load mesmo assim
+        current_url = page.url
+        logger.warning(f"⚠️ URL não mudou após 30s. Tentando esperar page load...")
+
+        try:
+            page.wait_for_load_state("domcontentloaded", timeout=10000)
+            logger.info("✅ DOM carregou mesmo com URL em /login")
+        except Exception as e:
+            logger.warning(f"⚠️ Timeout no wait_for_load_state: {e}")
 
         return current_url
 
@@ -465,13 +508,16 @@ class TubeHuntService:
             # 4. Aguardar carregamento da página de canais
             logger.info("Aguardando carregamento da página de canais...")
 
+            channels_loaded = False
             try:
                 page.wait_for_selector(".channel-card", timeout=wait_time * 1000)
-                logger.info("✅ Canais carregados")
-            except Exception:
-                logger.warning("⚠️ Timeout aguardando canais, continuando...")
+                logger.info("✅ Elementos de canal carregados no DOM")
+                channels_loaded = True
+            except Exception as e:
+                logger.warning(f"⚠️ Timeout aguardando .channel-card: {str(e)}")
 
-            time.sleep(2)
+            # Aguardar um pouco mais para elementos ficarem visíveis
+            time.sleep(3)
 
             # 5. Extrair dados de todos os canais
             logger.info("Extraindo dados dos canais...")
@@ -479,6 +525,13 @@ class TubeHuntService:
             channel_cards = page.query_selector_all(".channel-card")
 
             logger.info(f"Encontrados {len(channel_cards)} canais para extrair")
+
+            if len(channel_cards) == 0:
+                logger.warning("⚠️ Nenhum elemento .channel-card encontrado!")
+                logger.info("Tentando seladores alternativos...")
+                # Tentar outros seletores
+                channel_cards = page.query_selector_all("[data-testid*='channel'], .card, [class*='channel']")
+                logger.info(f"Encontrados {len(channel_cards)} elementos com seletores alternativos")
 
             for idx, channel_card in enumerate(channel_cards):
                 try:
