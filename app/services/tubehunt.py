@@ -462,12 +462,13 @@ class TubeHuntService:
             logger.error(f"❌ Erro ao extrair dados do canal: {str(e)}")
             raise
 
-    def scrape_channels(self, wait_time: int = 15) -> Dict[str, Any]:
+    def scrape_channels(self, wait_time: int = 15, scrape_url: Optional[str] = None) -> Dict[str, Any]:
         """
         Fazer login, navegar para página de canais e extrair dados detalhados
 
         Args:
             wait_time: Tempo de espera para carregamento
+            scrape_url: URL customizada para scraping (opcional, usa padrão se não fornecida)
 
         Returns:
             Dicionário com lista de canais e informações
@@ -495,11 +496,13 @@ class TubeHuntService:
             time.sleep(2)
 
             # 3. Navegar para página de canais
-            channels_url = "https://app.tubehunt.io/long/?page=1&OrderBy=DateDESC&ChangePerPage=50"
-            logger.info(f"Navegando para página de canais: {channels_url}")
+            # Usar URL customizada se fornecida, caso contrário usar padrão
+            if not scrape_url:
+                scrape_url = "https://app.tubehunt.io/long/?page=1&OrderBy=DateDESC&ChangePerPage=50"
+            logger.info(f"Navegando para página de canais: {scrape_url}")
 
             try:
-                page.goto(channels_url, timeout=120000)
+                page.goto(scrape_url, timeout=120000)
                 logger.info("✅ Página de canais acessada")
             except Exception as e:
                 logger.warning(f"⚠️ Timeout ao acessar página, continuando: {e}")

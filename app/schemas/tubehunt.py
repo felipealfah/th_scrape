@@ -302,7 +302,7 @@ class ScrapeChannelsRequest(BaseModel):
     webhook_url: Optional[str] = Field(None, description="URL para webhook callback quando job terminar")
 
     # Opções de scraping
-    wait_time: int = Field(default=15, ge=5, le=60, description="Tempo de espera em segundos")
+    wait_time: int = Field(default=15, ge=5, le=600, description="Tempo de espera em segundos (máximo 10 minutos)")
     extract_selector: str = Field(default="h1", description="Seletor CSS para extrair (default: h1)")
 
     class Config:

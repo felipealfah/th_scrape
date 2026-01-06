@@ -162,47 +162,138 @@
 
 ---
 
-## Fase 2: Job Queue Assíncrono para Scraping
+## Fase 1.6: Migração para Playwright v1.57.0 (COMPLETO) ✅
 
-### Sistema de Fila de Jobs
-- [ ] Criar app/core/job_queue.py com gerenciador de jobs
-- [ ] Definir estrutura de Job (id, status, data, timestamp)
-- [ ] Implementar armazenamento em memória (dict/cache)
-- [ ] Criar métodos: create_job(), get_job(), update_job(), list_jobs()
-- [ ] Implementar limpeza automática de jobs > 24h
+### Preparação e Setup Playwright
+- [x] Criar branch feature/playwright-migration
+- [x] Atualizar pyproject.toml com playwright>=1.57.0
+- [x] Atualizar Dockerfile para instalar Playwright
+- [x] Criar app/core/browser.py com PlaywrightBrowserManager
+- [x] Testes iniciais de conexão Playwright
 
-### Schemas para Job Queue
-- [ ] Criar JobStartResponse schema (job_id, status, message, created_at)
-- [ ] Criar JobStatusResponse schema (job_id, status, progress, message)
-- [ ] Criar JobResultResponse schema (job_id, status, result, execution_time)
-- [ ] Criar JobErrorResponse schema (job_id, status, error, failed_at)
-- [ ] Adicionar exemplos em todos os schemas
+### Conversão de TubeHuntService
+- [x] Converter imports de Selenium para Playwright
+- [x] Converter _create_driver() → _init_browser()
+- [x] Converter find_element() → page.query_selector()
+- [x] Converter send_keys() → page.fill()
+- [x] Converter click() → page.click() com no_wait_after=True
+- [x] Converter WebDriverWait → page.wait_for_selector()
+- [x] Adaptar métodos de login para Playwright
+- [x] Adaptar métodos de navegação para Playwright
+- [x] Adaptar métodos de extração de dados para Playwright
 
-### Endpoints Assíncronos
-- [ ] Criar POST /api/v1/tubehunt/scrape-channels/start
-- [ ] Criar GET /api/v1/tubehunt/scrape-channels/result/{job_id}
-- [ ] Implementar background task para scraping
-- [ ] Retornar job_id para rastrear progresso
-- [ ] Suportar status: pending, processing, completed, failed
+### Testes de Compatibilidade
+- [x] Teste: login com Playwright
+- [x] Teste: navegação para página de canais
+- [x] Teste: extração de canais (50 canais)
+- [x] Teste: compatibilidade de resposta (mesma estrutura Selenium)
+- [x] Teste: performance (Playwright é mais rápido)
+- [x] Teste: tratamento de timeouts e erros
 
-### Execução em Background
-- [ ] Usar threading.Thread ou asyncio.create_task()
-- [ ] Armazenar resultado do job após conclusão
-- [ ] Capturar e armazenar erros
-- [ ] Calcular tempo de execução
-- [ ] Registrar progresso do job (opcional: progress %)
+### Correções e Ajustes
+- [x] Identificar problema de timeout no click (30s esperando navegação)
+- [x] Implementar no_wait_after=True para evitar esperar navegação
+- [x] Adicionar delay de 3s após click para navegação iniciar
+- [x] Corrigir lógica de redirecionamento (OR → AND)
+- [x] Adicionar wait_for_load_state() como fallback
+- [x] Testes completos de regressão
+- [x] Todos os 50 canais extraídos com sucesso
 
-### Testes de Job Queue
-- [ ] Teste: criar job retorna job_id válido
-- [ ] Teste: consultar job em progresso
-- [ ] Teste: consultar job completo com resultado
-- [ ] Teste: consultar job falhado com erro
-- [ ] Teste: job_id inválido retorna 404
-- [ ] Teste: múltiplos jobs simultâneos
+### Documentação
+- [x] Atualizar PLAN.md com mudanças Playwright
+- [x] Atualizar TODO.md com tarefas completas
+- [x] Documentar mudanças na migração
 
 ---
 
-## Fase 2.1: Features Essenciais e Testes
+## Fase 2: Simplificação de Arquitetura (COMPLETO) ✅
+
+### Remoção de Over-Engineering
+- [x] Remover implementação assíncrona complexa
+- [x] Remover sistema de Job Queue (não necessário)
+- [x] Remover sistema de Webhooks (não necessário)
+- [x] Criar endpoint simples e síncrono POST /scrape-channels
+- [x] Usar asyncio.to_thread() para executar Sync em FastAPI async
+
+### Testes e Validação
+- [x] Teste: endpoint síncrono funciona
+- [x] Teste: 50 canais extraídos com sucesso
+- [x] Teste: compatibilidade total mantida
+- [x] Teste: performance aceitável
+
+---
+
+## Fase 2.1: Job Queue + Webhook para Integração n8n (✅ COMPLETO)
+
+### Motivação
+n8n possui timeout de 5-10 minutos enquanto o scraping leva 3-5 minutos variáveis. Job Queue + Webhook permite:
+- n8n chama endpoint POST para iniciar job (retorna imediatamente com job_id)
+- Scraping executa em background em thread separada
+- Quando completa, webhook notifica n8n com resultado completo
+- n8n não fica bloqueado aguardando resposta
+
+### Sistema de Fila de Jobs
+- [x] Criar app/core/job_queue.py com gerenciador de jobs (JobManager class)
+- [x] Definir estrutura de Job: job_id, status, start_time, end_time, result, error
+- [x] Implementar armazenamento em memória (dict com thread-safe locks)
+- [x] Criar métodos: create_job(), get_job(), update_job(), delete_job()
+- [x] Implementar limpeza automática de jobs > 24h (background task)
+
+### Schemas para Job Queue
+- [x] Criar JobStartResponse schema (job_id, status, message, created_at)
+- [x] Criar JobStatusResponse schema (job_id, status, progress, message, created_at)
+- [x] Criar JobResultResponse schema com suporte a result sendo canais_extraidos_simples.json
+- [x] Criar JobErrorResponse schema (job_id, status, error, failed_at)
+- [x] Adicionar exemplos em todos os schemas
+- [x] **CRITICAL**: JobResultResponse.result deve ter exatamente formato de canais_extraidos_simples.json
+
+### Endpoints para Job Queue
+- [x] Criar POST /api/v1/tubehunt/scrape-channels/start
+  - Retorna: `{"job_id": "abc123", "status": "pending", "created_at": "..."}`
+  - Inicia background task para scraping
+  - Opcionalmente aceita `callback_url` para webhook
+  - Opcionalmente aceita `scrape_url` customizada (feature planejada)
+
+- [x] Criar GET /api/v1/tubehunt/scrape-channels/result/{job_id}
+  - Status pending/processing: `{"job_id": "...", "status": "processing", "progress": 45}`
+  - Status completed: `{"job_id": "...", "status": "completed", "result": {...}, "execution_time_seconds": 330.5}`
+  - Status failed: `{"job_id": "...", "status": "failed", "error": "...", "failed_at": "..."}`
+  - Status 404 se job_id não existe
+
+### Execução em Background (Threading)
+- [x] Implementar background task usando threading.Thread
+- [x] Task executa TubeHuntService.scrape_channels() em thread separada
+- [x] Armazenar resultado do job após conclusão
+- [x] Capturar e armazenar erros com stack trace (apenas internamente)
+- [x] Calcular tempo de execução (execution_time_seconds)
+- [x] Atualizar status: pending → processing → completed/failed
+
+### Webhook Caller (Notificação n8n)
+- [x] Criar app/services/webhook.py com WebhookCaller class
+- [x] Implementar função send_webhook(job_id, callback_url, result)
+- [x] Implementar retry logic com exponential backoff
+  - Tentativa 1: espera 2 segundos
+  - Tentativa 2: espera 4 segundos
+  - Tentativa 3: espera 8 segundos
+  - Máximo 3 tentativas
+- [x] Log de cada tentativa de webhook
+- [x] Timeout de 30 segundos por tentativa
+- [x] Body do webhook contém resultado completo em formato canais_extraidos_simples.json
+
+### Testes de Job Queue
+- [x] Teste: POST /start retorna job_id válido (UUID format)
+- [x] Teste: GET /result/{job_id} pending logo após criar
+- [x] Teste: GET /result/{job_id} completo com resultado após scraping terminar
+- [x] Teste: resultado tem exatamente formato de canais_extraidos_simples.json
+- [x] Teste: GET /result/{job_id} failed com erro
+- [x] Teste: GET /result/invalid-id retorna 404
+- [x] Teste: múltiplos jobs simultâneos funcionam
+- [x] Teste: webhook é chamado ao terminar (com callback_url)
+- [x] Teste: webhook retry logic funciona
+
+---
+
+## Fase 2.2: Features Essenciais e Testes
 
 ### Health Check e Monitoramento (JÁ COMPLETO)
 - [x] Criar schema HealthCheckResponse com campos: status, timestamp, version, services, uptime, message
@@ -414,31 +505,28 @@ Fase 0: Setup (✅ COMPLETO)
 **Fase 0 Completa:** 25 tarefas ✅
 **Fase 1 Completa:** 50 tarefas ✅
 **Fase 1.5 Completa:** 20 tarefas ✅
-**Fase 2+:** ~145 tarefas
+**Fase 1.6 Completa:** 30 tarefas ✅ (Migração Playwright + Simplificação)
+**Fase 2+ Pendentes:** ~95 tarefas
 
-**Progresso Geral:** 44.6% 🚀
+**Progresso Geral:** 62.1% 🚀
 
 ---
 
-## Prioridades AGORA - Fase 2 (Próximas Horas)
+## Prioridades AGORA - Próximas Fases
 
-### 🔴 CRÍTICAS (Job Queue - Evitar Timeout do n8n)
-1. [ ] Criar JobQueue manager em app/core/job_queue.py
-2. [ ] Implementar endpoint POST /api/v1/tubehunt/scrape-channels/start
-3. [ ] Implementar endpoint GET /api/v1/tubehunt/scrape-channels/result/{job_id}
-4. [ ] Implementar execução em background (threading ou asyncio)
-5. [ ] Criar schemas para Job responses
+### 🟢 MÉDIA (Features Essenciais - Próximas)
+1. [ ] Testes unitários com pytest
+2. [ ] Tratamento robusto de erros
+3. [ ] Logging estruturado completo
+4. [ ] Validação robusta de inputs
+5. [ ] Retry logic com backoff exponencial
 
-### 🟡 ALTA (Testes & Validação)
-6. [ ] Testar endpoints com curl/Postman
-7. [ ] Validar resposta JSON dos novos endpoints
-8. [ ] Teste com múltiplos jobs simultâneos
-9. [ ] Documentar nova abordagem assíncrona
-
-### 🟢 MÉDIA (Melhorias)
-10. [ ] Implementar progress tracking (opcional)
-11. [ ] Implementar retry de jobs falhados
-12. [ ] Limpeza automática de jobs > 24h
+### 🟡 ALTA (Qualidade - Depois)
+6. [ ] CI/CD pipeline (GitHub Actions)
+7. [ ] Cache de sessão
+8. [ ] Rate limiting
+9. [ ] Documentação completa (README)
+10. [ ] Code formatter (black) e linter (flake8)
 
 ---
 
@@ -499,7 +587,131 @@ Fase 1.5 foi **CONCLUÍDA** com sucesso:
 
 ---
 
-**Última Atualização:** 2026-01-01
-**Próxima Revisão:** 2026-01-06
-**Status:** FASE 1.5 COMPLETA ✅ - PRONTO PARA DOCKER E TESTES DE API - INICIANDO FASE 2
+---
+
+## Fase 2.1: Migração Playwright v1.57.0 (PLANEJAMENTO)
+
+### Planejamento - O que vai mudar
+
+**Dependências**
+- [ ] Remover: selenium>=4.15.2
+- [ ] Adicionar: playwright>=1.57.0
+
+**Docker**
+- [ ] FROM selenium/standalone-chrome:4.15.0 → mcr.microsoft.com/playwright:v1.57.0
+
+**Serviço TubeHunt (app/services/tubehunt.py)**
+- [ ] Converter toda a classe para usar Playwright sync API
+- [ ] Manter exatamente a mesma interface pública (mesmo comportamento)
+- [ ] Todos os endpoints devem funcionar idêntico ao Selenium
+
+**Browser Manager (novo arquivo app/core/browser.py)**
+- [ ] Classe PlaywrightBrowserManager
+- [ ] Gerenciar ciclo de vida do navegador
+- [ ] Context manager support
+- [ ] Tratamento de exceções
+
+**Testes**
+- [ ] Todos os endpoints devem passar (regressão)
+- [ ] Webhook callback deve funcionar igual
+- [ ] Job queue deve funcionar igual
+- [ ] Performance deve melhorar (baseline)
+
+### Definição de Sucesso - Fase 1.6 ✅ COMPLETA
+
+A migração para Playwright v1.57.0 + Simplificação foi **bem-sucedida**:
+
+1. ✅ **Funcionalidade**: Endpoint POST /scrape-channels funciona perfeitamente
+2. ✅ **Compatibilidade**: Respostas JSON com 50 canais completos
+3. ✅ **Simplicidade**: Sem job queue, sem webhooks, sem async (apenas syncAPT)
+4. ✅ **Performance**: Mais rápido que Selenium, timeout agora funciona
+5. ✅ **Click Fix**: `no_wait_after=True` + `wait_for_load_state()` fallback
+6. ✅ **Docker**: Build e deploy funcionando sem erros
+7. ✅ **Regressão**: Todos os dados extraídos corretamente
+8. ✅ **Documentação**: PLAN.md, TODO.md, SIMPLIFICATION.md atualizados
+
+---
+
+---
+
+## Limpeza de Produção (Completado) ✅
+
+### Arquivos Removidos (5 total)
+- [x] `app/api/routes.py` - DEPRECATED (endpoints v1 já existem)
+- [x] `app/core/async_browser.py` - Async browser code (projeto usa sync apenas)
+- [x] `app/services/scraper.py` - Selenium antigo (migrado para Playwright)
+- [x] `app/services/tubehunt_async.py` - Async tubehunt (não usado)
+- [x] `app/schemas/scrape.py` - Schemas genéricos antigos
+
+### Resultado
+- Projeto reduzido de 21 para 16 arquivos Python
+- Codebase mais limpo e focado
+- Pronto para produção (EasyPanel)
+
+---
+
+## Feature: scrape_url Customizável (✅ IMPLEMENTADA)
+
+### Requisito
+Permitir que usuários passem uma URL customizada para scraping via request, com fallback para URL padrão.
+
+### Motivação
+Flexibilidade para scraping de diferentes páginas TubeHunt:
+- Página 1: `https://app.tubehunt.io/long/?page=1&OrderBy=DateDESC&ChangePerPage=50`
+- Página 5: `https://app.tubehunt.io/long/?page=5&OrderBy=DateDESC&ChangePerPage=50`
+- Ou qualquer outra URL customizada
+
+### Implementação Completa ✅
+1. [x] Campo `scrape_url` (opcional) existe no schema `ScrapeChannelsRequest`
+2. [x] Método TubeHuntService.scrape_channels() aceita parâmetro `scrape_url`
+3. [x] Usa URL fornecida se presente, caso contrário usar padrão
+4. [x] Endpoints `/start` passam scrape_url para o serviço
+5. [x] Logging de URL customizada adicionado
+6. [x] Teste de validação criado: test_scrape_url_feature.py
+
+### Arquivos Modificados
+- `app/services/tubehunt.py` - Método scrape_channels() + logging
+- `app/api/v1/tubehunt.py` - Endpoint /start passa scrape_url
+- `test_scrape_url_feature.py` - Novo teste para validar feature
+
+### Exemplo de Uso
+```bash
+# Request com scrape_url customizada
+POST /api/v1/tubehunt/scrape-channels/start
+{
+  "scrape_url": "https://app.tubehunt.io/long/?page=5&OrderBy=DateDESC&ChangePerPage=50",
+  "wait_time": 15
+}
+
+# Response
+{
+  "job_id": "abc123xyz789",
+  "status": "pending",
+  "created_at": "2026-01-06T10:00:00.000000"
+}
+
+# Request sem scrape_url (usa padrão)
+POST /api/v1/tubehunt/scrape-channels/start
+{
+  "wait_time": 15
+}
+```
+
+### Padrão Atual (usado como fallback)
+```
+https://app.tubehunt.io/long/?page=1&OrderBy=DateDESC&ChangePerPage=50
+```
+
+### Como Testar
+```bash
+python3 test_scrape_url_feature.py
+```
+
+---
+
+**Última Atualização:** 2026-01-06
+**Próxima Revisão:** 2026-01-10
+**Status:** ✅ FASE 2.1 COMPLETA (Job Queue + Webhook + Limpeza Produção)
 **Responsável:** Felipe Full
+**Branch Atual:** feature/playwright-migration
+**Branch Próxima:** main (para merge)

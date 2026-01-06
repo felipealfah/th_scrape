@@ -2,7 +2,6 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from app.core.config import settings
-from app.api import routes
 from app.api.v1 import tubehunt
 import logging
 
@@ -32,7 +31,6 @@ app.add_middleware(
 )
 
 # Include routes
-app.include_router(routes.router)
 app.include_router(tubehunt.router, prefix="/api/v1")
 
 

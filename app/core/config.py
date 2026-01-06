@@ -11,10 +11,10 @@ class Settings(BaseSettings):
     APP_VERSION: str = "0.1.0"
     DEBUG: bool = False
 
-    # Selenium
+    # Selenium/Playwright
     SELENIUM_URL: str = "http://selenium-chrome:4444"
     SELENIUM_HEADLESS: bool = True
-    SELENIUM_TIMEOUT: int = 30
+    SELENIUM_TIMEOUT: int = 60
 
     # API
     API_HOST: str = "0.0.0.0"
