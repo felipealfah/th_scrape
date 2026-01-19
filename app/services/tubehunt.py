@@ -374,6 +374,14 @@ class TubeHuntService:
             # Monetizado (presença do ícone)
             is_monetized = bool(channel_card.query_selector("i.bi-currency-dollar"))
 
+            # Categorias
+            categories = []
+            categories_elem = channel_card.query_selector("span.badge.mt-2.badge-soft.rounded-pill")
+            if categories_elem:
+                categories_text = categories_elem.text_content().strip()
+                # Split por vírgula e limpa cada categoria
+                categories = [cat.strip() for cat in categories_text.split(",")]
+
             # Extrair stats cards
             stat_cards = channel_card.query_selector_all(".stat-card")
             stats = {}
@@ -449,6 +457,7 @@ class TubeHuntService:
                 "subscribers": subscribers,
                 "is_verified": is_verified,
                 "is_monetized": is_monetized,
+                "categories": categories,
                 "total_views": stats.get("total_views", "N/A"),
                 "views_last_60_days": stats.get("views_last_60_days", "N/A"),
                 "average_views_per_video": stats.get("average_views_per_video", "N/A"),

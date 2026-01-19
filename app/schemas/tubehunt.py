@@ -100,6 +100,7 @@ class ChannelData(BaseModel):
     subscribers: str = Field(..., description="Número de inscritos (ex: '2k')")
     is_verified: bool = Field(default=False, description="Se o canal é verificado")
     is_monetized: bool = Field(default=False, description="Se o canal é monetizado")
+    categories: list[str] = Field(default_factory=list, description="Categorias do canal (ex: ['Military', 'Politics', 'Society'])")
 
     # Estatísticas
     total_views: str = Field(..., description="Total de views em vídeos longos")
@@ -122,6 +123,7 @@ class ChannelData(BaseModel):
                 "subscribers": "2k",
                 "is_verified": True,
                 "is_monetized": True,
+                "categories": ["Fashion", "Lifestyle"],
                 "total_views": "149k",
                 "views_last_60_days": "14k",
                 "average_views_per_video": "981",
@@ -164,6 +166,7 @@ class ChannelsListResponse(BaseModel):
                         "subscribers": "2k",
                         "is_verified": True,
                         "is_monetized": True,
+                        "categories": ["Fashion", "Lifestyle"],
                         "total_views": "149k",
                         "views_last_60_days": "14k",
                         "average_views_per_video": "981",
