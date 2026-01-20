@@ -322,6 +322,79 @@ class ScrapeChannelsRequest(BaseModel):
         }
 
 
+class NichoData(BaseModel):
+    """Dados de um nicho extraído da página Notion"""
+    name: str = Field(..., description="Nome do nicho")
+    category: str = Field(..., description="Categoria/Seção do nicho")
+    image_url: str = Field(..., description="URL da imagem do nicho")
+    rpm: str = Field(..., description="RPM (Revenue Per Mille)")
+    sub_niche: str = Field(..., description="Sub-niche/Tag")
+    data: str = Field(default="N/A", description="Data associada ao nicho")
+    place: str = Field(default="N/A", description="Localização/Place")
+    url: str = Field(default="N/A", description="URL associada ao nicho")
+
+    class Config:
+        json_schema_extra = {
+            "example": {
+                "name": "Movies Consigliere",
+                "category": "TV shows / Movie franchises",
+                "image_url": "https://image.notion.com/...",
+                "rpm": "$4 RPM",
+                "sub_niche": "Mafia Movies",
+                "data": "Vazio",
+                "place": "Vazio",
+                "url": "https://www.youtube.com/@MoviesConsigliere/videos"
+            }
+        }
+
+
+class NichosListResponse(BaseModel):
+    """Response model para scraping de nichos Notion"""
+    success: bool = Field(..., description="Indica se o scraping foi bem-sucedido")
+    nichos: list[NichoData] = Field(default_factory=list, description="Lista de nichos extraídos")
+    total_nichos: int = Field(default=0, description="Total de nichos extraídos")
+    timestamp: datetime = Field(default_factory=datetime.utcnow, description="Timestamp da requisição")
+    error: Optional[str] = Field(None, description="Mensagem de erro se falhou")
+
+    class Config:
+        json_schema_extra = {
+            "example": {
+                "success": True,
+                "nichos": [
+                    {
+                        "name": "Movies Consigliere",
+                        "category": "TV shows / Movie franchises",
+                        "image_url": "https://image.notion.com/...",
+                        "rpm": "$4 RPM",
+                        "sub_niche": "Mafia Movies",
+                        "data": "Vazio",
+                        "place": "Vazio",
+                        "url": "https://www.youtube.com/@MoviesConsigliere/videos"
+                    }
+                ],
+                "total_nichos": 1,
+                "timestamp": "2026-01-20T20:00:00.000000",
+                "error": None
+            }
+        }
+
+
+class ScrapeNichosRequest(BaseModel):
+    """Request model para iniciar scraping de nichos Notion"""
+    notion_url: str = Field(..., description="URL da página Notion para fazer scraping")
+    wait_time: int = Field(default=15, ge=5, le=120, description="Tempo de espera em segundos (máximo 2 minutos)")
+    webhook_url: Optional[str] = Field(None, description="URL para webhook callback quando job terminar")
+
+    class Config:
+        json_schema_extra = {
+            "example": {
+                "notion_url": "https://victorgonwp.notion.site/PASTA-100-NICHOS-PRO-2e7620bdb33e813db5dac38194635f51",
+                "wait_time": 15,
+                "webhook_url": "https://n8n.example.com/webhook/abc123"
+            }
+        }
+
+
 class WebhookPayload(BaseModel):
     """Payload enviado para webhook quando job termina"""
     job_id: str = Field(..., description="ID do job")

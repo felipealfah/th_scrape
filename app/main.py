@@ -2,7 +2,7 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from app.core.config import settings
-from app.api.v1 import tubehunt
+from app.api.v1 import tubehunt, notion
 import logging
 
 
@@ -32,6 +32,7 @@ app.add_middleware(
 
 # Include routes
 app.include_router(tubehunt.router, prefix="/api/v1")
+app.include_router(notion.router, prefix="/api/v1")
 
 
 @app.on_event("startup")
