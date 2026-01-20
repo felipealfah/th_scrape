@@ -7,7 +7,7 @@ from app.schemas.tubehunt import (
     JobStartResponse
 )
 from app.services.notion import NotionNichosService
-from app.core.job_queue import job_queue
+from app.core.job_queue import job_manager
 from datetime import datetime
 import threading
 
@@ -20,11 +20,11 @@ def scrape_nichos_job(job_id: str, request: ScrapeNichosRequest):
     """Função que executa o scraping em background"""
     try:
         logger.info(f"[JOB {job_id}] Iniciando scraping de nichos...")
-        job_queue.update_job(job_id, status="processing", progress=10)
+        job_manager.update_job_progress(job_id, 10)
 
         with NotionNichosService() as service:
             logger.info(f"[JOB {job_id}] Acessando Notion: {request.notion_url}")
-            job_queue.update_job(job_id, status="processing", progress=20)
+            job_manager.update_job_progress(job_id, 20)
 
             result = service.scrape_nichos(
                 notion_url=request.notion_url,
@@ -32,10 +32,10 @@ def scrape_nichos_job(job_id: str, request: ScrapeNichosRequest):
             )
 
             logger.info(f"[JOB {job_id}] Scraping concluído. Nichos extraídos: {result.get('total_nichos')}")
-            job_queue.update_job(job_id, status="processing", progress=90)
+            job_manager.update_job_progress(job_id, 90)
 
             # Salvar resultado
-            job_queue.complete_job(job_id, result=result)
+            job_manager.mark_job_completed(job_id, result=result)
             logger.info(f"[JOB {job_id}] Job concluído com sucesso")
 
             # Enviar webhook se fornecido
@@ -46,7 +46,7 @@ def scrape_nichos_job(job_id: str, request: ScrapeNichosRequest):
 
     except Exception as e:
         logger.error(f"[JOB {job_id}] Erro no scraping: {str(e)}", exc_info=True)
-        job_queue.fail_job(job_id, error=str(e))
+        job_manager.mark_job_failed(job_id, error=str(e))
 
         # Enviar webhook de erro se fornecido
         if request.webhook_url:
@@ -80,7 +80,7 @@ async def start_scrape_nichos(request: ScrapeNichosRequest):
             )
 
         # Criar job
-        job_id = job_queue.create_job()
+        job_id = job_manager.create_job()
         logger.info(f"[JOB {job_id}] Novo job criado para Notion scraping")
 
         # Executar scraping em thread separada
@@ -127,7 +127,7 @@ async def get_scrape_nichos_result(job_id: str):
     - Status `failed`: Job falhou com erro
     """
     try:
-        job = job_queue.get_job(job_id)
+        job = job_manager.get_job_dict(job_id)
 
         if not job:
             raise HTTPException(
@@ -135,8 +135,10 @@ async def get_scrape_nichos_result(job_id: str):
                 detail=f"Job {job_id} não encontrado"
             )
 
+        status = job.get("status")
+
         # Se job ainda está pendente ou processando
-        if job.get("status") in ["pending", "processing"]:
+        if status in ["pending", "processing"]:
             return NichosListResponse(
                 success=False,
                 nichos=[],
@@ -145,7 +147,7 @@ async def get_scrape_nichos_result(job_id: str):
             )
 
         # Se job falhou
-        if job.get("status") == "failed":
+        if status == "failed":
             return NichosListResponse(
                 success=False,
                 nichos=[],
