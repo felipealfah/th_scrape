@@ -379,6 +379,27 @@ class NichosListResponse(BaseModel):
         }
 
 
+class ScrapeChannelsByNichoRequest(BaseModel):
+    """Request model para scraping de canais por nicho"""
+    nicho: str = Field(..., description="Nome do nicho (ex: 'TV shows / Movie franchises', 'Aviation', 'Cars')")
+    wait_time: int = Field(default=15, ge=5, le=120, description="Tempo de espera em segundos para carregamento")
+    webhook_url: Optional[str] = Field(None, description="URL para webhook callback quando job terminar")
+
+    # Credenciais (opcional, usa .env como fallback)
+    login_url: Optional[str] = Field(None, description="URL de login (fallback: .env)")
+    username: Optional[str] = Field(None, description="Usuário/Email (fallback: .env)")
+    password: Optional[str] = Field(None, description="Senha (fallback: .env)")
+
+    class Config:
+        json_schema_extra = {
+            "example": {
+                "nicho": "TV shows / Movie franchises",
+                "wait_time": 15,
+                "webhook_url": "https://n8n.example.com/webhook/abc123"
+            }
+        }
+
+
 class ScrapeNichosRequest(BaseModel):
     """Request model para iniciar scraping de nichos Notion"""
     notion_url: str = Field(..., description="URL da página Notion para fazer scraping")

@@ -176,23 +176,47 @@ class NotionNichosService:
                 logger.info(f"Usando seletor alternativo: encontrados {len(cards)} elementos")
 
             nichos = []
-            h3_sections = page.query_selector_all("h3")
+
+            # Extrair seções de h3 com suas posições e textos
+            h3_elements = page.query_selector_all("h3")
+            sections = []
+            for h3 in h3_elements:
+                h3_text = h3.text_content().strip()
+                if h3_text:  # Ignorar h3s vazios
+                    try:
+                        h3_position = h3.evaluate("el => el.getBoundingClientRect().top")
+                        sections.append({
+                            "text": h3_text,
+                            "position": h3_position,
+                            "element": h3
+                        })
+                    except Exception as e:
+                        logger.warning(f"⚠️ Erro ao calcular posição do h3 '{h3_text}': {str(e)}")
+                        continue
+
+            # Ordenar seções por posição (da mais alta para a mais baixa)
+            sections.sort(key=lambda x: x["position"])
+
+            logger.info(f"Encontradas {len(sections)} seções de categoria (h3s)")
+            for sec in sections:
+                logger.info(f"  - {sec['text']} (posição: {sec['position']:.2f})")
 
             # Mapear cards por seção
-            current_category = "Geral"
-
             for idx, card in enumerate(cards):
                 try:
-                    # Tentar determinar a categoria olhando para h3s anteriores
+                    # Determinar a categoria olhando para h3s anteriores
                     card_position = card.evaluate("el => el.getBoundingClientRect().top")
 
-                    for h3 in h3_sections:
-                        h3_position = h3.evaluate("el => el.getBoundingClientRect().top")
-                        h3_text = h3.text_content().strip()
+                    # Encontrar o h3 mais próximo que está acima do card
+                    current_category = "Sem categoria"
+                    closest_section_position = -float('inf')
 
-                        # Se o h3 está acima do card e é mais próximo que o anterior
-                        if h3_position < card_position and h3_text:
-                            current_category = h3_text
+                    for section in sections:
+                        section_position = section["position"]
+                        # Se a seção está acima do card e é mais próxima que a anterior
+                        if section_position < card_position and section_position > closest_section_position:
+                            closest_section_position = section_position
+                            current_category = section["text"]
 
                     logger.info(f"Processando card {idx + 1}/{len(cards)} (Categoria: {current_category})...")
                     card_data = self._extract_card_details(card)
@@ -200,7 +224,7 @@ class NotionNichosService:
                     if card_data and card_data.get("name") != "N/A":
                         card_data["category"] = current_category
                         nichos.append(card_data)
-                        logger.info(f"   ✅ Card extraído: {card_data.get('name')}")
+                        logger.info(f"   ✅ Card extraído: {card_data.get('name')} | RPM: {card_data.get('rpm', 'N/A')}")
                     else:
                         logger.warning(f"   ⚠️ Card não contém dados válidos")
                 except Exception as e:
