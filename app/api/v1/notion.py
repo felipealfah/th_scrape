@@ -40,9 +40,15 @@ def scrape_nichos_job(job_id: str, request: ScrapeNichosRequest):
 
             # Enviar webhook se fornecido
             if request.webhook_url:
-                from app.services.webhook import send_webhook
+                from app.services.webhook import webhook_caller
                 logger.info(f"[JOB {job_id}] Enviando webhook para: {request.webhook_url}")
-                send_webhook(job_id, "completed", result, request.webhook_url)
+                webhook_caller.send_webhook(
+                    webhook_url=request.webhook_url,
+                    job_id=job_id,
+                    status="completed",
+                    result=result,
+                    execution_time_seconds=None
+                )
 
     except Exception as e:
         logger.error(f"[JOB {job_id}] Erro no scraping: {str(e)}", exc_info=True)
@@ -50,9 +56,15 @@ def scrape_nichos_job(job_id: str, request: ScrapeNichosRequest):
 
         # Enviar webhook de erro se fornecido
         if request.webhook_url:
-            from app.services.webhook import send_webhook
+            from app.services.webhook import webhook_caller
             logger.info(f"[JOB {job_id}] Enviando webhook de erro para: {request.webhook_url}")
-            send_webhook(job_id, "failed", None, request.webhook_url, error=str(e))
+            webhook_caller.send_webhook(
+                webhook_url=request.webhook_url,
+                job_id=job_id,
+                status="failed",
+                error=str(e),
+                execution_time_seconds=None
+            )
 
 
 @router.post(
