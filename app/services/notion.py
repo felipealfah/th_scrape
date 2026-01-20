@@ -163,17 +163,79 @@ class NotionNichosService:
             logger.info("Aguardando carregamento da página...")
             time.sleep(wait_time)
 
+            # 2.5 Fazer scroll na página para carregar conteúdo dinâmico do Notion
+            logger.info("Fazendo scroll na página para carregar todo o conteúdo...")
+            try:
+                page.evaluate("""() => {
+                    window.scrollTo(0, document.body.scrollHeight);
+                }""")
+                time.sleep(5)  # Aguardar carregamento após scroll
+                # Scroll para o topo
+                page.evaluate("""() => {
+                    window.scrollTo(0, 0);
+                }""")
+                logger.info("✅ Scroll concluído")
+            except Exception as e:
+                logger.warning(f"⚠️ Erro ao fazer scroll: {str(e)}")
+
             # 3. Procurar por cards de nichos
             logger.info("Procurando por cards de nichos...")
 
-            # Seletores para encontrar os cards
+            # Seletores para encontrar os cards - tentar múltiplas opções
             cards = page.query_selector_all(".notion-collection-item")
-            logger.info(f"Encontrados {len(cards)} cards de nichos")
+            logger.info(f"Seletor 1 (.notion-collection-item): encontrados {len(cards)} cards")
 
-            # Também tentar seletor alternativo
-            if not cards:
-                cards = page.query_selector_all("div[data-block-id].notion-page-block")
-                logger.info(f"Usando seletor alternativo: encontrados {len(cards)} elementos")
+            # Se não encontrou ou encontrou poucos, tentar seletor alternativo
+            if len(cards) < 10:
+                cards_alt = page.query_selector_all("div[data-block-id].notion-page-block")
+                logger.info(f"Seletor 2 (div[data-block-id].notion-page-block): encontrados {len(cards_alt)} cards")
+                if len(cards_alt) > len(cards):
+                    cards = cards_alt
+
+            # Se ainda não encontrou suficientes, tentar abordagem por posição vertical
+            if len(cards) < 20:
+                logger.info("Tentando seletor 3: buscar elementos por posição vertical...")
+                try:
+                    # Procurar por divs que estão entre h3s (estrutura: h3 -> content -> cards -> h3)
+                    found_cards = []
+                    all_divs = page.query_selector_all("div")
+
+                    for div in all_divs:
+                        try:
+                            # Verificar se tem img, link E está "entre" h3s (não é muito grande)
+                            has_img = div.query_selector("img") is not None
+                            has_link = div.query_selector("a") is not None
+                            text_length = len(div.text_content().strip())
+
+                            # Card typical: tem img, link, texto entre 20-1000 chars (não muito vazio, não é container gigante)
+                            if has_img and has_link and 20 < text_length < 1000:
+                                found_cards.append(div)
+                        except Exception:
+                            continue
+
+                    # Usar JavaScript para remover duplicatas (mesmos elementos DOM)
+                    if found_cards:
+                        # Filtrar duplicatas usando características únicas (texto + classe)
+                        seen_texts = set()
+                        unique_cards = []
+                        for card in found_cards:
+                            try:
+                                card_text = card.text_content().strip()[:100]  # Primeiros 100 chars
+                                if card_text and card_text not in seen_texts:
+                                    unique_cards.append(card)
+                                    seen_texts.add(card_text)
+                                    if len(unique_cards) >= 200:
+                                        break
+                            except Exception:
+                                continue
+
+                        if unique_cards and len(unique_cards) > len(cards):
+                            cards = unique_cards
+                            logger.info(f"Seletor 3: encontrados {len(cards)} elementos únicos")
+                except Exception as e:
+                    logger.warning(f"Erro ao usar seletor 3: {str(e)}")
+
+            logger.info(f"Total de cards encontrados para processar: {len(cards)}")
 
             nichos = []
 
