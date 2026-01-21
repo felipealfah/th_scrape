@@ -61,70 +61,74 @@ class NotionNichosService:
                 self.page = None
 
     def _extract_card_details(self, card_element) -> Dict[str, Any]:
-        """Extrair detalhes do card (dados visíveis + tentativa de link)"""
+        """Extrair detalhes do card tratando estruturas variáveis"""
         try:
             page = self.get_page()
 
-            # Nome do nicho - procurar em diferentes seletores
             name = "N/A"
-
-            # Procurar pelo div de nome específico (dentro do card, after image)
-            name_div = card_element.query_selector(
-                "div[style*='position: relative; width: 100%; display: flex;']"
-            )
-            if name_div:
-                name_elem = name_div.query_selector("[contenteditable='false']")
-                if name_elem:
-                    name = name_elem.text_content().strip()
-
-            # Se não encontrou, tentar span com notion-enable-hover
-            if name == "N/A":
-                name_elem = card_element.query_selector("span.notion-enable-hover")
-                if name_elem:
-                    name = name_elem.text_content().strip()
-
-            # Se ainda não encontrou, procurar em spans por tamanho
-            if name == "N/A":
-                spans = card_element.query_selector_all("span")
-                if spans:
-                    for span in spans:
-                        text = span.text_content().strip()
-                        # Filtrar tags (que são muito curtas) e RPM
-                        if text and len(text) > 3 and "$" not in text and "RPM" not in text:
-                            name = text
-                            break
-
-            # Imagem
+            rpm = "N/A"
+            sub_niche = "N/A"
             image_url = "N/A"
+            url = "N/A"
+
+            # 1. Extrair spans do card
+            spans = card_element.query_selector_all("span")
+
+            # Tratamento de estruturas variáveis:
+            # Estrutura 1 (com notion-enable-hover): [nome, RPM, sub-niche]
+            # Estrutura 2 (sem notion-enable-hover): [RPM, nome/categoria, ...]
+
+            if spans:
+                # Procurar pelo span com class "notion-enable-hover" (é sempre o nome)
+                name_span = card_element.query_selector("span.notion-enable-hover")
+                if name_span:
+                    # Encontrou estrutura 1: span com classe
+                    name = name_span.text_content().strip()
+                    # RPM é o segundo span
+                    if len(spans) > 1:
+                        rpm = spans[1].text_content().strip()
+                    # Sub-niche é o terceiro span
+                    if len(spans) > 2:
+                        sub_niche = spans[2].text_content().strip()
+                else:
+                    # Estrutura 2: sem classe no nome
+                    # spans[0] = RPM (contém "$X RPM")
+                    # spans[1] = Nome/Categoria
+                    # spans[2+] = Mais detalhes se houver
+
+                    if len(spans) > 0:
+                        first_span = spans[0].text_content().strip()
+                        # Se começa com "$", é RPM
+                        if first_span.startswith("$") and "RPM" in first_span:
+                            rpm = first_span
+                            # Nome é o segundo span
+                            if len(spans) > 1:
+                                name = spans[1].text_content().strip()
+                        else:
+                            # Se não começa com "$", assume que é nome
+                            name = first_span
+                            if len(spans) > 1:
+                                rpm = spans[1].text_content().strip()
+
+                    # Sub-niche pode estar em terceiro
+                    if len(spans) > 2:
+                        sub_niche = spans[2].text_content().strip()
+
+            # 2. Extrair imagem
             img_elem = card_element.query_selector("img")
             if img_elem:
-                image_url = img_elem.get_attribute("src") or "N/A"
+                src = img_elem.get_attribute("src")
+                if src:
+                    image_url = src
 
-            # RPM (tag em cor laranja)
-            rpm = "N/A"
-            rpm_elem = card_element.query_selector("div[style*='color: var(--c-oraTexPri)']")
-            if rpm_elem:
-                span = rpm_elem.query_selector("span")
-                if span:
-                    rpm = span.text_content().strip()
-
-            # Sub-niche (tag em cor vermelha)
-            sub_niche = "N/A"
-            sub_niche_elem = card_element.query_selector("div[style*='color: var(--c-redTexPri)']")
-            if sub_niche_elem:
-                span = sub_niche_elem.query_selector("span")
-                if span:
-                    sub_niche = span.text_content().strip()
-
-            # URL (tentar extrair do link do card)
-            url = "N/A"
+            # 3. Extrair URL do link
             link = card_element.query_selector("a")
             if link:
                 href = link.get_attribute("href")
                 if href:
                     url = href
 
-            # Retornar dados extraídos (sem clicar para evitar timeouts)
+            # Retornar dados extraídos
             return {
                 "name": name,
                 "image_url": image_url,
@@ -163,174 +167,156 @@ class NotionNichosService:
             logger.info("Aguardando carregamento da página...")
             time.sleep(wait_time)
 
-            # 2.5 Fazer scroll repetido para forçar carregamento de TODOS os cards
-            logger.info("Fazendo scroll repetido (6x com 3s cada) para carregar conteúdo dinâmico...")
-            try:
-                # Scroll múltiplo com espera maior entre cada um
-                for scroll_num in range(6):
-                    pct = (scroll_num + 1) * (100 / 6)
-                    logger.info(f"  - Scroll {scroll_num + 1}/6: para {pct:.0f}%...")
-                    page.evaluate(f"() => window.scrollTo(0, document.body.scrollHeight * {pct/100})")
-                    time.sleep(3)  # 3 segundos entre scrolls
-
-                # Voltar ao topo
-                logger.info("  - Voltando ao topo...")
-                page.evaluate("() => window.scrollTo(0, 0)")
-                time.sleep(2)
-
-                logger.info("✅ Scroll repetido concluído")
-            except Exception as e:
-                logger.warning(f"⚠️ Erro ao fazer scroll: {str(e)}")
-
-            # 3. Procurar por cards de nichos
-            logger.info("Procurando por cards de nichos...")
-
-            # Seletores para encontrar os cards - tentar múltiplas opções
-            cards = page.query_selector_all(".notion-collection-item")
-            logger.info(f"Seletor 1 (.notion-collection-item): encontrados {len(cards)} cards")
-
-            # Se não encontrou ou encontrou poucos, tentar seletor alternativo
-            if len(cards) < 10:
-                cards_alt = page.query_selector_all("div[data-block-id].notion-page-block")
-                logger.info(f"Seletor 2 (div[data-block-id].notion-page-block): encontrados {len(cards_alt)} cards")
-                if len(cards_alt) > len(cards):
-                    cards = cards_alt
-
-            # Se ainda não encontrou suficientes, tentar seletor 3 com filtro mais restritivo
-            if len(cards) < 10:
-                logger.info("Tentando seletor 3: buscar divs com (1 img + 1+ links, 50-500 chars)...")
-                try:
-                    all_divs = page.query_selector_all("div")
-                    found_cards = []
-
-                    for div in all_divs:
-                        try:
-                            # Filtro mais restritivo para evitar duplicatas
-                            imgs = div.query_selector_all("img")
-                            links = div.query_selector_all("a")
-                            text_length = len(div.text_content().strip())
-
-                            # Critério muito mais rigoroso:
-                            # - Exatamente 1 imagem (evita containers grandes)
-                            # - Pelo menos 1 link (navegação)
-                            # - Texto entre 50-500 chars (tamanho de card típico)
-                            if len(imgs) == 1 and len(links) > 0 and 50 < text_length < 500:
-                                found_cards.append(div)
-                        except Exception:
-                            continue
-
-                    if found_cards:
-                        logger.info(f"Seletor 3: encontrados {len(found_cards)} elementos com critério rigoroso")
-                        # Remover duplicatas por URL do link
-                        seen_urls = set()
-                        unique_cards = []
-                        for card in found_cards:
-                            try:
-                                link = card.query_selector("a")
-                                if link:
-                                    url = link.get_attribute("href") or ""
-                                    if url and url not in seen_urls:
-                                        unique_cards.append(card)
-                                        seen_urls.add(url)
-                            except Exception:
-                                continue
-
-                        if unique_cards and len(unique_cards) > len(cards):
-                            cards = unique_cards
-                            logger.info(f"Seletor 3: após deduplicação, {len(cards)} elementos únicos")
-                except Exception as e:
-                    logger.warning(f"Erro ao usar seletor 3: {str(e)}")
-
-            logger.info(f"Total de cards encontrados para processar: {len(cards)}")
+            # 3. Fluxo com verificação de carregamento: CARREGAR → VERIFICAR → EXTRAIR → SCROLL
+            logger.info("\n" + "=" * 100)
+            logger.info("FLUXO COM VERIFICAÇÃO DE CARREGAMENTO")
+            logger.info("Carregar → Verificar → Extrair → Scroll → Repetir")
+            logger.info("=" * 100)
 
             nichos = []
+            seen_urls = set()
 
-            # Extrair seções de h3 com suas posições e textos
+            # Posições de scroll para carregar diferentes seções
+            scroll_positions = [0, 12, 25, 37, 50, 62, 75, 87, 100]
+
+            for idx, pos_pct in enumerate(scroll_positions):
+                logger.info(f"\n{'='*80}")
+                logger.info(f"SEÇÃO {idx + 1}/{len(scroll_positions)}: Scroll {pos_pct}%")
+                logger.info(f"{'='*80}")
+
+                # 1️⃣ CARREGAR: Scroll para posição
+                if pos_pct > 0:
+                    logger.info(f"1️⃣ CARREGAR: Fazendo scroll para {pos_pct}%...")
+                    try:
+                        page.evaluate(f"() => window.scrollTo(0, document.body.scrollHeight * {pos_pct/100})")
+                        time.sleep(3)  # Aguardar carregamento inicial
+                    except Exception as e:
+                        logger.warning(f"   ⚠️ Erro ao scrollar: {str(e)}")
+                        continue
+                else:
+                    logger.info(f"1️⃣ CARREGAR: Página já carregada no topo")
+
+                # 2️⃣ VERIFICAR: Verificar se dados foram carregados
+                logger.info(f"2️⃣ VERIFICAR: Verificando se dados carregaram...")
+                try:
+                    # Contar cards disponíveis
+                    cards = page.query_selector_all(".notion-collection-item")
+                    if len(cards) == 0:
+                        cards = page.query_selector_all("div[data-block-id].notion-page-block")
+
+                    # Verificar se há cards nesta seção
+                    if len(cards) == 0:
+                        logger.info(f"   ❌ Nenhum card encontrado nesta seção")
+                        continue
+
+                    logger.info(f"   ✅ {len(cards)} cards encontrados no DOM")
+
+                    # Aguardar um pouco mais para rendering completar
+                    time.sleep(2)
+
+                    # 3️⃣ EXTRAIR: Extrair dados dos cards carregados
+                    logger.info(f"3️⃣ EXTRAIR: Extraindo dados dos cards...")
+                    extracted_in_section = 0
+                    skipped_duplicates = 0
+                    skipped_invalid = 0
+
+                    for idx_card, card in enumerate(cards):
+                        try:
+                            card_data = self._extract_card_details(card)
+
+                            if not card_data or card_data.get("name") == "N/A":
+                                continue
+
+                            url = card_data.get("url", "N/A")
+
+                            # Verificar se já foi extraído
+                            if url in seen_urls:
+                                skipped_duplicates += 1
+                                continue
+
+                            # Validar dados
+                            if url == "N/A" or url == "#main" or not url.startswith("/"):
+                                skipped_invalid += 1
+                                continue
+
+                            image_url = card_data.get("image_url", "N/A")
+                            if "/icons/" in image_url or image_url.endswith(".svg"):
+                                skipped_invalid += 1
+                                continue
+
+                            # ✅ Card válido - adicionar
+                            nichos.append(card_data)
+                            seen_urls.add(url)
+                            extracted_in_section += 1
+                            logger.info(f"     [{extracted_in_section}] ✅ {card_data.get('name', 'N/A')[:40]}")
+
+                        except Exception as e:
+                            logger.debug(f"     Erro ao extrair card {idx_card}: {str(e)}")
+                            continue
+
+                    logger.info(f"   📊 Resultados nesta seção:")
+                    logger.info(f"      Extraídos: {extracted_in_section}")
+                    logger.info(f"      Duplicados: {skipped_duplicates}")
+                    logger.info(f"      Inválidos: {skipped_invalid}")
+                    logger.info(f"      Total acumulado: {len(nichos)}")
+
+                except Exception as e:
+                    logger.error(f"   ❌ Erro ao verificar/extrair: {str(e)}", exc_info=False)
+
+            # Voltar ao topo
+            logger.info("\nVoltando ao topo da página...")
+            page.evaluate("() => window.scrollTo(0, 0)")
+            time.sleep(2)
+
+            logger.info(f"\n✅ Extração iterativa concluída: {len(nichos)} nichos únicos coletados")
+
+            # 5. Atribuir categorias aos nichos extraídos
+            logger.info("\nAtribuindo categorias aos nichos...")
             h3_elements = page.query_selector_all("h3")
             sections = []
             for h3 in h3_elements:
                 h3_text = h3.text_content().strip()
-                if h3_text:  # Ignorar h3s vazios
+                if h3_text:
                     try:
                         h3_position = h3.evaluate("el => el.getBoundingClientRect().top")
                         sections.append({
                             "text": h3_text,
-                            "position": h3_position,
-                            "element": h3
+                            "position": h3_position
                         })
-                    except Exception as e:
-                        logger.warning(f"⚠️ Erro ao calcular posição do h3 '{h3_text}': {str(e)}")
+                        logger.info(f"  - {h3_text} (posição: {h3_position:.2f})")
+                    except Exception:
                         continue
 
-            # Ordenar seções por posição (da mais alta para a mais baixa)
             sections.sort(key=lambda x: x["position"])
 
-            logger.info(f"Encontradas {len(sections)} seções de categoria (h3s)")
-            for sec in sections:
-                logger.info(f"  - {sec['text']} (posição: {sec['position']:.2f})")
-
-            # Mapear cards por seção
-            for idx, card in enumerate(cards):
+            # 6. Atribuir categoria para cada nicho
+            for nicho in nichos:
                 try:
-                    # Determinar a categoria olhando para h3s anteriores
-                    card_position = card.evaluate("el => el.getBoundingClientRect().top")
-
-                    # Encontrar o h3 mais próximo que está acima do card
                     current_category = "Sem categoria"
                     closest_section_position = -float('inf')
 
-                    for section in sections:
-                        section_position = section["position"]
-                        # Se a seção está acima do card e é mais próxima que a anterior
-                        if section_position < card_position and section_position > closest_section_position:
-                            closest_section_position = section_position
-                            current_category = section["text"]
+                    # Procurar elemento do nicho no DOM para obter posição
+                    url_part = nicho.get('url', '').split('?')[0].split('/')[-1]
+                    nicho_card = page.query_selector(f"a[href*='{url_part}']")
 
-                    logger.info(f"Processando card {idx + 1}/{len(cards)} (Categoria: {current_category})...")
-                    card_data = self._extract_card_details(card)
+                    if nicho_card:
+                        nicho_position = nicho_card.evaluate("el => el.getBoundingClientRect().top")
 
-                    if card_data and card_data.get("name") != "N/A":
-                        # Filtros de validação
-                        image_url = card_data.get("image_url", "N/A")
-                        url = card_data.get("url", "N/A")
+                        for section in sections:
+                            if section["position"] < nicho_position and section["position"] > closest_section_position:
+                                closest_section_position = section["position"]
+                                current_category = section["text"]
 
-                        # Rejeitar se imagem é ícone/SVG (não é foto de canal)
-                        if "/icons/" in image_url or image_url.endswith(".svg"):
-                            logger.warning(f"   ⚠️ Rejeitado: imagem é ícone ({image_url})")
-                            continue
+                    nicho["category"] = current_category
+                except Exception:
+                    nicho["category"] = "Sem categoria"
 
-                        # Rejeitar se URL é inválida
-                        if url == "N/A" or url == "#main" or not url.startswith("/"):
-                            logger.warning(f"   ⚠️ Rejeitado: URL inválida ({url})")
-                            continue
-
-                        card_data["category"] = current_category
-                        nichos.append(card_data)
-                        logger.info(f"   ✅ Card extraído: {card_data.get('name')} | RPM: {card_data.get('rpm', 'N/A')}")
-                    else:
-                        logger.warning(f"   ⚠️ Card não contém dados válidos")
-                except Exception as e:
-                    logger.error(f"   ❌ Erro ao processar card {idx + 1}: {str(e)}")
-                    continue
-
-            # Remover duplicatas por URL (mesmos cards podem ser encontrados múltiplas vezes)
-            logger.info("Removendo duplicatas...")
-            seen_urls = set()
-            unique_nichos = []
-            for nicho in nichos:
-                url = nicho.get("url", "N/A")
-                if url not in seen_urls:
-                    unique_nichos.append(nicho)
-                    seen_urls.add(url)
-                else:
-                    logger.info(f"   Duplicata removida: {nicho.get('name')} ({url})")
-
-            logger.info(f"✅ {len(unique_nichos)} nichos únicos extraídos com sucesso")
+            logger.info(f"✅ {len(nichos)} nichos com categorias atribuídas")
 
             return {
                 "success": True,
-                "nichos": unique_nichos,
-                "total_nichos": len(unique_nichos),
+                "nichos": nichos,
+                "total_nichos": len(nichos),
                 "url": page.url,
                 "error": None,
             }
