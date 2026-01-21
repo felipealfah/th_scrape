@@ -140,13 +140,13 @@ class NotionNichosService:
             return {}
 
 
-    def scrape_nichos(self, notion_url: str, wait_time: int = 15) -> Dict[str, Any]:
+    def scrape_nichos(self, notion_url: str, wait_time: int = 20) -> Dict[str, Any]:
         """
         Fazer scraping de nichos da página Notion
 
         Args:
             notion_url: URL da página Notion para fazer scraping
-            wait_time: Tempo de espera para carregamento em segundos
+            wait_time: Tempo de espera para carregamento em segundos (padrão: 20s)
 
         Returns:
             Dicionário com lista de nichos extraídos
@@ -163,18 +163,22 @@ class NotionNichosService:
             logger.info("Aguardando carregamento da página...")
             time.sleep(wait_time)
 
-            # 2.5 Fazer scroll na página para carregar conteúdo dinâmico do Notion
-            logger.info("Fazendo scroll na página para carregar todo o conteúdo...")
+            # 2.5 Fazer scroll repetido para forçar carregamento de TODOS os cards
+            logger.info("Fazendo scroll repetido (6x com 3s cada) para carregar conteúdo dinâmico...")
             try:
-                page.evaluate("""() => {
-                    window.scrollTo(0, document.body.scrollHeight);
-                }""")
-                time.sleep(5)  # Aguardar carregamento após scroll
-                # Scroll para o topo
-                page.evaluate("""() => {
-                    window.scrollTo(0, 0);
-                }""")
-                logger.info("✅ Scroll concluído")
+                # Scroll múltiplo com espera maior entre cada um
+                for scroll_num in range(6):
+                    pct = (scroll_num + 1) * (100 / 6)
+                    logger.info(f"  - Scroll {scroll_num + 1}/6: para {pct:.0f}%...")
+                    page.evaluate(f"() => window.scrollTo(0, document.body.scrollHeight * {pct/100})")
+                    time.sleep(3)  # 3 segundos entre scrolls
+
+                # Voltar ao topo
+                logger.info("  - Voltando ao topo...")
+                page.evaluate("() => window.scrollTo(0, 0)")
+                time.sleep(2)
+
+                logger.info("✅ Scroll repetido concluído")
             except Exception as e:
                 logger.warning(f"⚠️ Erro ao fazer scroll: {str(e)}")
 
@@ -207,8 +211,8 @@ class NotionNichosService:
                             has_link = div.query_selector("a") is not None
                             text_length = len(div.text_content().strip())
 
-                            # Card typical: tem img, link, texto entre 20-1000 chars (não muito vazio, não é container gigante)
-                            if has_img and has_link and 20 < text_length < 1000:
+                            # Card typical: tem img, link, texto entre 20-3000 chars (não muito vazio, não é container gigante)
+                            if has_img and has_link and 20 < text_length < 3000:
                                 found_cards.append(div)
                         except Exception:
                             continue
