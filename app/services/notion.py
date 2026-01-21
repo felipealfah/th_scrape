@@ -196,46 +196,48 @@ class NotionNichosService:
                 if len(cards_alt) > len(cards):
                     cards = cards_alt
 
-            # Se ainda não encontrou suficientes, tentar abordagem por posição vertical
-            if len(cards) < 20:
-                logger.info("Tentando seletor 3: buscar elementos por posição vertical...")
+            # Se ainda não encontrou suficientes, tentar seletor 3 com filtro mais restritivo
+            if len(cards) < 10:
+                logger.info("Tentando seletor 3: buscar divs com (1 img + 1+ links, 50-500 chars)...")
                 try:
-                    # Procurar por divs que estão entre h3s (estrutura: h3 -> content -> cards -> h3)
-                    found_cards = []
                     all_divs = page.query_selector_all("div")
+                    found_cards = []
 
                     for div in all_divs:
                         try:
-                            # Verificar se tem img, link E está "entre" h3s (não é muito grande)
-                            has_img = div.query_selector("img") is not None
-                            has_link = div.query_selector("a") is not None
+                            # Filtro mais restritivo para evitar duplicatas
+                            imgs = div.query_selector_all("img")
+                            links = div.query_selector_all("a")
                             text_length = len(div.text_content().strip())
 
-                            # Card typical: tem img, link, texto entre 20-3000 chars (não muito vazio, não é container gigante)
-                            if has_img and has_link and 20 < text_length < 3000:
+                            # Critério muito mais rigoroso:
+                            # - Exatamente 1 imagem (evita containers grandes)
+                            # - Pelo menos 1 link (navegação)
+                            # - Texto entre 50-500 chars (tamanho de card típico)
+                            if len(imgs) == 1 and len(links) > 0 and 50 < text_length < 500:
                                 found_cards.append(div)
                         except Exception:
                             continue
 
-                    # Usar JavaScript para remover duplicatas (mesmos elementos DOM)
                     if found_cards:
-                        # Filtrar duplicatas usando características únicas (texto + classe)
-                        seen_texts = set()
+                        logger.info(f"Seletor 3: encontrados {len(found_cards)} elementos com critério rigoroso")
+                        # Remover duplicatas por URL do link
+                        seen_urls = set()
                         unique_cards = []
                         for card in found_cards:
                             try:
-                                card_text = card.text_content().strip()[:100]  # Primeiros 100 chars
-                                if card_text and card_text not in seen_texts:
-                                    unique_cards.append(card)
-                                    seen_texts.add(card_text)
-                                    if len(unique_cards) >= 200:
-                                        break
+                                link = card.query_selector("a")
+                                if link:
+                                    url = link.get_attribute("href") or ""
+                                    if url and url not in seen_urls:
+                                        unique_cards.append(card)
+                                        seen_urls.add(url)
                             except Exception:
                                 continue
 
                         if unique_cards and len(unique_cards) > len(cards):
                             cards = unique_cards
-                            logger.info(f"Seletor 3: encontrados {len(cards)} elementos únicos")
+                            logger.info(f"Seletor 3: após deduplicação, {len(cards)} elementos únicos")
                 except Exception as e:
                     logger.warning(f"Erro ao usar seletor 3: {str(e)}")
 
@@ -288,6 +290,20 @@ class NotionNichosService:
                     card_data = self._extract_card_details(card)
 
                     if card_data and card_data.get("name") != "N/A":
+                        # Filtros de validação
+                        image_url = card_data.get("image_url", "N/A")
+                        url = card_data.get("url", "N/A")
+
+                        # Rejeitar se imagem é ícone/SVG (não é foto de canal)
+                        if "/icons/" in image_url or image_url.endswith(".svg"):
+                            logger.warning(f"   ⚠️ Rejeitado: imagem é ícone ({image_url})")
+                            continue
+
+                        # Rejeitar se URL é inválida
+                        if url == "N/A" or url == "#main" or not url.startswith("/"):
+                            logger.warning(f"   ⚠️ Rejeitado: URL inválida ({url})")
+                            continue
+
                         card_data["category"] = current_category
                         nichos.append(card_data)
                         logger.info(f"   ✅ Card extraído: {card_data.get('name')} | RPM: {card_data.get('rpm', 'N/A')}")
@@ -297,12 +313,24 @@ class NotionNichosService:
                     logger.error(f"   ❌ Erro ao processar card {idx + 1}: {str(e)}")
                     continue
 
-            logger.info(f"✅ {len(nichos)} nichos extraídos com sucesso")
+            # Remover duplicatas por URL (mesmos cards podem ser encontrados múltiplas vezes)
+            logger.info("Removendo duplicatas...")
+            seen_urls = set()
+            unique_nichos = []
+            for nicho in nichos:
+                url = nicho.get("url", "N/A")
+                if url not in seen_urls:
+                    unique_nichos.append(nicho)
+                    seen_urls.add(url)
+                else:
+                    logger.info(f"   Duplicata removida: {nicho.get('name')} ({url})")
+
+            logger.info(f"✅ {len(unique_nichos)} nichos únicos extraídos com sucesso")
 
             return {
                 "success": True,
-                "nichos": nichos,
-                "total_nichos": len(nichos),
+                "nichos": unique_nichos,
+                "total_nichos": len(unique_nichos),
                 "url": page.url,
                 "error": None,
             }
