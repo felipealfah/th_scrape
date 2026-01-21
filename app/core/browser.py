@@ -16,16 +16,18 @@ class PlaywrightBrowserManager:
     Suporta inicialização automática e limpeza de recursos via context manager.
     """
 
-    def __init__(self, headless: bool = True, browser_type: str = "chromium"):
+    def __init__(self, headless: bool = True, browser_type: str = "chromium", viewport: Optional[dict] = None):
         """
         Inicializar PlaywrightBrowserManager.
 
         Args:
             headless: Se True, executa em modo headless (sem GUI)
             browser_type: Tipo de navegador ("chromium", "firefox", "webkit")
+            viewport: Dicionário com "width" e "height" ou None para padrão
         """
         self.headless = headless
         self.browser_type = browser_type
+        self.viewport = viewport or {"width": 1280, "height": 720}
         self.playwright = None
         self.browser: Optional[Browser] = None
         self.context: Optional[BrowserContext] = None
@@ -71,9 +73,9 @@ class PlaywrightBrowserManager:
             self.browser = browser_launcher.launch(headless=self.headless)
             logger.info(f"✅ Navegador {self.browser_type} lançado (headless={self.headless})")
 
-            # Criar contexto
-            self.context = self.browser.new_context()
-            logger.info("✅ Contexto de navegador criado")
+            # Criar contexto com viewport customizado
+            self.context = self.browser.new_context(viewport=self.viewport)
+            logger.info(f"✅ Contexto de navegador criado (viewport: {self.viewport['width']}x{self.viewport['height']})")
 
             # Criar página
             self.page = self.context.new_page()

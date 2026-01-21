@@ -11,8 +11,10 @@ logger = logging.getLogger(__name__)
 class NotionNichosService:
     """Serviço para extrair dados de nichos da página Notion"""
 
-    def __init__(self):
-        """Inicializar serviço"""
+    def __init__(self, headless: bool = False, viewport: Optional[Dict] = None):
+        """Inicializar serviço (headless=False necessário para renderizar Notion)"""
+        self.headless = headless
+        self.viewport = viewport or {"width": 1920, "height": 10000}
         self.browser_manager: Optional[PlaywrightBrowserManager] = None
         self.page: Optional[Page] = None
 
@@ -26,12 +28,13 @@ class NotionNichosService:
         self.close()
 
     def _create_driver(self) -> Page:
-        """Criar navegador Playwright"""
+        """Criar navegador Playwright com viewport grande para renderizar todos os cards"""
         try:
             logger.info("Lançando navegador Playwright para Notion...")
             self.browser_manager = PlaywrightBrowserManager(
-                headless=True,
-                browser_type="chromium"
+                headless=self.headless,
+                browser_type="chromium",
+                viewport=self.viewport
             )
             self.page = self.browser_manager.launch()
             logger.info("✅ Navegador Playwright criado")
@@ -167,108 +170,53 @@ class NotionNichosService:
             logger.info("Aguardando carregamento da página...")
             time.sleep(wait_time)
 
-            # 3. Fluxo com verificação de carregamento: CARREGAR → VERIFICAR → EXTRAIR → SCROLL
             logger.info("\n" + "=" * 100)
-            logger.info("FLUXO COM VERIFICAÇÃO DE CARREGAMENTO")
-            logger.info("Carregar → Verificar → Extrair → Scroll → Repetir")
+            logger.info("EXTRAÇÃO COMPLETA DE TODOS OS NICHOS")
             logger.info("=" * 100)
 
             nichos = []
             seen_urls = set()
 
-            # Posições de scroll para carregar diferentes seções
-            scroll_positions = [0, 12, 25, 37, 50, 62, 75, 87, 100]
+            # Extrair TODOS os cards
+            logger.info("\nProcurando por cards no DOM...")
+            cards = page.query_selector_all("div.notion-collection-item")
+            logger.info(f"✅ {len(cards)} cards encontrados\n")
 
-            for idx, pos_pct in enumerate(scroll_positions):
-                logger.info(f"\n{'='*80}")
-                logger.info(f"SEÇÃO {idx + 1}/{len(scroll_positions)}: Scroll {pos_pct}%")
-                logger.info(f"{'='*80}")
-
-                # 1️⃣ CARREGAR: Scroll para posição
-                if pos_pct > 0:
-                    logger.info(f"1️⃣ CARREGAR: Fazendo scroll para {pos_pct}%...")
-                    try:
-                        page.evaluate(f"() => window.scrollTo(0, document.body.scrollHeight * {pos_pct/100})")
-                        time.sleep(3)  # Aguardar carregamento inicial
-                    except Exception as e:
-                        logger.warning(f"   ⚠️ Erro ao scrollar: {str(e)}")
-                        continue
-                else:
-                    logger.info(f"1️⃣ CARREGAR: Página já carregada no topo")
-
-                # 2️⃣ VERIFICAR: Verificar se dados foram carregados
-                logger.info(f"2️⃣ VERIFICAR: Verificando se dados carregaram...")
+            logger.info("3️⃣ EXTRAIR: Extraindo dados dos cards...")
+            for idx_card, card in enumerate(cards, 1):
                 try:
-                    # Contar cards disponíveis
-                    cards = page.query_selector_all(".notion-collection-item")
-                    if len(cards) == 0:
-                        cards = page.query_selector_all("div[data-block-id].notion-page-block")
+                    card_data = self._extract_card_details(card)
 
-                    # Verificar se há cards nesta seção
-                    if len(cards) == 0:
-                        logger.info(f"   ❌ Nenhum card encontrado nesta seção")
+                    if not card_data or card_data.get("name") == "N/A":
                         continue
 
-                    logger.info(f"   ✅ {len(cards)} cards encontrados no DOM")
+                    url = card_data.get("url", "N/A")
 
-                    # Aguardar um pouco mais para rendering completar
-                    time.sleep(2)
+                    # Verificar se já foi extraído
+                    if url in seen_urls:
+                        continue
 
-                    # 3️⃣ EXTRAIR: Extrair dados dos cards carregados
-                    logger.info(f"3️⃣ EXTRAIR: Extraindo dados dos cards...")
-                    extracted_in_section = 0
-                    skipped_duplicates = 0
-                    skipped_invalid = 0
+                    # Validar dados
+                    if url == "N/A" or url == "#main" or not url.startswith("/"):
+                        continue
 
-                    for idx_card, card in enumerate(cards):
-                        try:
-                            card_data = self._extract_card_details(card)
+                    image_url = card_data.get("image_url", "N/A")
+                    if "/icons/" in image_url or image_url.endswith(".svg"):
+                        continue
 
-                            if not card_data or card_data.get("name") == "N/A":
-                                continue
+                    # ✅ Card válido - adicionar
+                    nichos.append(card_data)
+                    seen_urls.add(url)
 
-                            url = card_data.get("url", "N/A")
-
-                            # Verificar se já foi extraído
-                            if url in seen_urls:
-                                skipped_duplicates += 1
-                                continue
-
-                            # Validar dados
-                            if url == "N/A" or url == "#main" or not url.startswith("/"):
-                                skipped_invalid += 1
-                                continue
-
-                            image_url = card_data.get("image_url", "N/A")
-                            if "/icons/" in image_url or image_url.endswith(".svg"):
-                                skipped_invalid += 1
-                                continue
-
-                            # ✅ Card válido - adicionar
-                            nichos.append(card_data)
-                            seen_urls.add(url)
-                            extracted_in_section += 1
-                            logger.info(f"     [{extracted_in_section}] ✅ {card_data.get('name', 'N/A')[:40]}")
-
-                        except Exception as e:
-                            logger.debug(f"     Erro ao extrair card {idx_card}: {str(e)}")
-                            continue
-
-                    logger.info(f"   📊 Resultados nesta seção:")
-                    logger.info(f"      Extraídos: {extracted_in_section}")
-                    logger.info(f"      Duplicados: {skipped_duplicates}")
-                    logger.info(f"      Inválidos: {skipped_invalid}")
-                    logger.info(f"      Total acumulado: {len(nichos)}")
+                    # Log a cada 20
+                    if len(nichos) % 20 == 0:
+                        logger.info(f"   ✅ {len(nichos)} nichos extraídos...")
 
                 except Exception as e:
-                    logger.error(f"   ❌ Erro ao verificar/extrair: {str(e)}", exc_info=False)
+                    logger.debug(f"   Erro ao extrair card {idx_card}: {str(e)}")
+                    continue
 
-            # Voltar ao topo
-            logger.info("\nVoltando ao topo da página...")
-            page.evaluate("() => window.scrollTo(0, 0)")
-            time.sleep(2)
-
-            logger.info(f"\n✅ Extração iterativa concluída: {len(nichos)} nichos únicos coletados")
+            logger.info(f"\n✅ Extração concluída: {len(nichos)} nichos únicos coletados")
 
             # 5. Atribuir categorias aos nichos extraídos
             logger.info("\nAtribuindo categorias aos nichos...")
