@@ -2,39 +2,36 @@ FROM python:3.11-slim
 
 WORKDIR /app
 
-# Install system dependencies for Playwright
+# Install system dependencies for Playwright Chromium
+# Using Playwright's recommended dependencies for Debian
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    gcc \
-    libglib2.0-0 \
-    libnspr4 \
+    # Playwright core dependencies
     libnss3 \
+    libnspr4 \
     libdbus-1-3 \
-    libxcb1 \
     libx11-6 \
     libxext6 \
     libxrender1 \
-    fonts-liberation \
-    xdg-utils \
-    wget \
-    ca-certificates \
-    libatk-1.0-0 \
-    libatk-bridge2.0-0 \
-    libatspi2.0-0 \
+    libglib2.0-0 \
+    libxcb1 \
     libxcomposite1 \
     libxdamage1 \
     libxfixes3 \
     libxrandr2 \
-    libgbm1 \
     libxkbcommon0 \
-    libasound2 \
+    libgbm1 \
+    fonts-liberation \
+    xdg-utils \
+    wget \
+    ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 
 # Copy requirements and install Python dependencies
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Install Playwright browsers
-RUN python -m playwright install chromium
+# Install Playwright browsers (this will also install system libraries if needed)
+RUN python -m playwright install --with-deps chromium
 
 # Copy application code
 COPY . .
