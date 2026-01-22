@@ -6,7 +6,7 @@ from app.schemas.tubehunt import (
     NichosListResponse,
     JobStartResponse
 )
-from app.services.notion import NotionNichosService
+from app.services.notion import NotionNichosService, NotionNichosServiceAPI
 from app.core.job_queue import job_manager
 from datetime import datetime
 import threading
@@ -17,38 +17,39 @@ router = APIRouter(prefix="/notion", tags=["Notion Nichos"])
 
 
 def scrape_nichos_job(job_id: str, request: ScrapeNichosRequest):
-    """Função que executa o scraping em background"""
+    """Função que executa o scraping em background usando API interception"""
     try:
-        logger.info(f"[JOB {job_id}] Iniciando scraping de nichos...")
+        logger.info(f"[JOB {job_id}] Iniciando scraping de nichos (versão API interception)...")
         job_manager.update_job_progress(job_id, 10)
 
-        with NotionNichosService() as service:
-            logger.info(f"[JOB {job_id}] Acessando Notion: {request.notion_url}")
-            job_manager.update_job_progress(job_id, 20)
+        # Usar a nova versão com API interception (melhor e mais robusta)
+        service = NotionNichosServiceAPI(headless=True)
+        logger.info(f"[JOB {job_id}] Acessando Notion: {request.notion_url}")
+        job_manager.update_job_progress(job_id, 20)
 
-            result = service.scrape_nichos(
-                notion_url=request.notion_url,
-                wait_time=request.wait_time
+        result = service.scrape_nichos(
+            notion_url=request.notion_url,
+            wait_time=request.wait_time
+        )
+
+        logger.info(f"[JOB {job_id}] Scraping concluído. Canais extraídos: {result.get('total_nichos')}")
+        job_manager.update_job_progress(job_id, 90)
+
+        # Salvar resultado
+        job_manager.mark_job_completed(job_id, result=result)
+        logger.info(f"[JOB {job_id}] Job concluído com sucesso")
+
+        # Enviar webhook se fornecido
+        if request.webhook_url:
+            from app.services.webhook import webhook_caller
+            logger.info(f"[JOB {job_id}] Enviando webhook para: {request.webhook_url}")
+            webhook_caller.send_webhook(
+                webhook_url=request.webhook_url,
+                job_id=job_id,
+                status="completed",
+                result=result,
+                execution_time_seconds=None
             )
-
-            logger.info(f"[JOB {job_id}] Scraping concluído. Nichos extraídos: {result.get('total_nichos')}")
-            job_manager.update_job_progress(job_id, 90)
-
-            # Salvar resultado
-            job_manager.mark_job_completed(job_id, result=result)
-            logger.info(f"[JOB {job_id}] Job concluído com sucesso")
-
-            # Enviar webhook se fornecido
-            if request.webhook_url:
-                from app.services.webhook import webhook_caller
-                logger.info(f"[JOB {job_id}] Enviando webhook para: {request.webhook_url}")
-                webhook_caller.send_webhook(
-                    webhook_url=request.webhook_url,
-                    job_id=job_id,
-                    status="completed",
-                    result=result,
-                    execution_time_seconds=None
-                )
 
     except Exception as e:
         logger.error(f"[JOB {job_id}] Erro no scraping: {str(e)}", exc_info=True)

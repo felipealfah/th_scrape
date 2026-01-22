@@ -1,20 +1,267 @@
 """Serviço de scraping da página Notion de Nichos"""
 import logging
 import time
+import json
 from typing import Optional, Dict, Any, List
-from playwright.sync_api import Page
+from playwright.sync_api import Page, sync_playwright
 from app.core.browser import PlaywrightBrowserManager
 
 logger = logging.getLogger(__name__)
+
+
+class NotionNichosServiceAPI:
+    """Serviço melhorado que usa API interception para extrair dados (baseado em test_ext.py)"""
+
+    def __init__(self, headless: bool = True, viewport: Optional[Dict] = None):
+        """Inicializar serviço com interception de API
+
+        Viewport: 1920x1080 é o padrão para Notion
+        """
+        self.headless = headless
+        self.viewport = viewport or {"width": 1920, "height": 1080}
+        self.collected_responses = []
+        self.niches = []
+
+    def _get_niches_with_positions(self, page) -> List[Dict]:
+        """Extrair nichos pelos elementos <h3>"""
+        logger.info("▶ Mapeando nichos pelo DOM (<h3>)...")
+
+        niches = []
+        h3s = page.query_selector_all("h3")
+
+        for h in h3s:
+            try:
+                text = h.inner_text().strip() if hasattr(h, 'inner_text') else h.text_content().strip()
+                if not text:
+                    continue
+
+                y = h.evaluate("el => el.getBoundingClientRect().top + window.scrollY")
+
+                niches.append({
+                    "name": text,
+                    "y": y
+                })
+            except:
+                pass
+
+        niches.sort(key=lambda x: x["y"])
+
+        logger.info(f"✅ Nichos encontrados: {len(niches)}")
+        for n in niches:
+            logger.info(f"   - {n['name']}")
+
+        return niches
+
+    def _assign_niche_by_position(self, rows: List[Dict], niches: List[Dict], page) -> List[Dict]:
+        """Atribuir nicho por posição dos cards"""
+        logger.info("▶ Atribuindo nichos aos canais (via cards da tabela)...")
+
+        # Pegar todos os cards visíveis da tabela
+        cards = page.query_selector_all("div.notion-collection-item")
+        logger.info(f"   Cards encontrados no DOM: {len(cards)}")
+
+        card_positions = []
+
+        for c in cards:
+            try:
+                text = c.inner_text().strip() if hasattr(c, 'inner_text') else c.text_content().strip()
+                if not text:
+                    continue
+
+                y = c.evaluate("el => el.getBoundingClientRect().top + window.scrollY")
+
+                card_positions.append({
+                    "text": text,
+                    "y": y
+                })
+            except:
+                pass
+
+        # Mapear rows
+        for row in rows:
+            row["niche"] = None
+            title = (row.get("title") or "").strip()
+
+            if not title:
+                continue
+
+            # Achar card correspondente pelo título
+            matched_y = None
+            for c in card_positions:
+                if title in c["text"]:
+                    matched_y = c["y"]
+                    break
+
+            if matched_y is None:
+                continue
+
+            # Achar nicho acima
+            current = None
+            for n in niches:
+                if n["y"] <= matched_y:
+                    current = n["name"]
+                else:
+                    break
+
+            row["niche"] = current
+
+        return rows
+
+    def scrape_nichos(self, notion_url: str, wait_time: int = 20) -> Dict[str, Any]:
+        """Fazer scraping de nichos da página Notion usando API interception"""
+        try:
+            logger.info("▶ Abrindo Notion e interceptando API...")
+            self.collected_responses = []
+
+            with sync_playwright() as p:
+                # ========================
+                # FASE 1: Interceptar API
+                # ========================
+                logger.info("FASE 1: Interceptando respostas da API Notion...")
+
+                browser = p.chromium.launch(headless=self.headless)
+                ctx = browser.new_context(viewport=self.viewport)
+                page = ctx.new_page()
+
+                # Handler para respostas
+                def handle_response(resp):
+                    try:
+                        if "queryCollection" in resp.url or "syncRecordValues" in resp.url:
+                            try:
+                                self.collected_responses.append(resp.json())
+                                logger.debug(f"📥 API: {resp.url.split('/')[-1]}")
+                            except:
+                                pass
+                    except:
+                        pass
+
+                page.on("response", handle_response)
+
+                # Abrir página
+                logger.info(f"Navegando para: {notion_url}")
+                page.goto(notion_url, timeout=120_000)
+                logger.info(f"▶ Aguardando render inicial ({wait_time}s)...")
+                time.sleep(wait_time)
+
+                # Scroll leve para garantir lazy-load
+                logger.info("▶ Scroll leve para garantir lazy-load...")
+                for i in range(12):
+                    page.mouse.wheel(0, 3000)
+                    time.sleep(1.5)
+                    if (i + 1) % 4 == 0:
+                        logger.debug(f"   Scroll {i + 1}/12...")
+
+                logger.info("▶ Esperando últimas respostas...")
+                time.sleep(8)
+
+                # Ler nichos do DOM
+                self.niches = self._get_niches_with_positions(page)
+
+                browser.close()
+
+            # ========================
+            # FASE 2: Extrair Rows da API
+            # ========================
+            logger.info(f"\n✅ Responses capturadas: {len(self.collected_responses)}")
+            logger.info("FASE 2: Extraindo dados das respostas da API...")
+
+            rows = []
+
+            for blob in self.collected_responses:
+                rm = blob.get("recordMap", {}).get("block", {})
+                for b in rm.values():
+                    v = b.get("value", {})
+                    if v.get("type") == "page" and "properties" in v:
+                        props = v["properties"]
+                        row = {}
+                        for k, val in props.items():
+                            row[k] = "".join(x[0] for x in val if x)
+                        rows.append(row)
+
+            # Remover duplicados
+            unique = {json.dumps(r, sort_keys=True): r for r in rows}
+            rows = list(unique.values())
+
+            logger.info(f"✅ TOTAL DE CANAIS (API): {len(rows)}")
+
+            # ========================
+            # FASE 3: Atribuir Nicho
+            # ========================
+            logger.info("FASE 3: Atribuindo nichos aos canais...")
+
+            with sync_playwright() as p:
+                browser = p.chromium.launch(headless=True)
+                ctx = browser.new_context(viewport=self.viewport)
+                page = ctx.new_page()
+                page.goto(notion_url, timeout=120_000)
+                time.sleep(20)
+
+                rows = self._assign_niche_by_position(rows, self.niches, page)
+
+                browser.close()
+
+            # ========================
+            # FASE 4: Normalizar e retornar
+            # ========================
+            logger.info("FASE 4: Normalizando dados...")
+
+            canais = []
+
+            for r in rows:
+                title = r.get("title")
+                url = r.get("YhHt")  # Campo de URL
+                rpm = r.get("V>qb")   # Campo de RPM
+                tags = r.get("}zd>")  # Campo de tags
+                niche = r.get("niche", "Sem nicho")
+
+                if not title or not url or not url.startswith("http"):
+                    continue
+
+                canais.append({
+                    "name": title.strip(),
+                    "youtube_url": url.strip(),
+                    "rpm": rpm.replace(" RPM", "").replace("$", "").strip() if rpm else None,
+                    "tags": [t.strip() for t in tags.split(",")] if isinstance(tags, str) else [],
+                    "niche": niche,
+                    "url": url.strip()
+                })
+
+            logger.info(f"\n✅ TOTAL FINAL DE CANAIS: {len(canais)}")
+            logger.info("=" * 80)
+
+            return {
+                "success": True,
+                "nichos": canais,
+                "total_nichos": len(canais),
+                "url": notion_url,
+                "error": None,
+            }
+
+        except Exception as e:
+            logger.error(f"❌ Erro no scraping: {str(e)}", exc_info=True)
+            return {
+                "success": False,
+                "nichos": [],
+                "total_nichos": 0,
+                "url": None,
+                "error": str(e),
+            }
 
 
 class NotionNichosService:
     """Serviço para extrair dados de nichos da página Notion"""
 
     def __init__(self, headless: bool = False, viewport: Optional[Dict] = None):
-        """Inicializar serviço (headless=False necessário para renderizar Notion)"""
+        """Inicializar serviço (headless=False necessário para renderizar Notion)
+
+        Viewport ótimo: 1920x1080 (renderiza 202 cards)
+        - 1280x720: apenas 9 cards
+        - 1920x1080: 202 cards (MÁXIMO)
+        - 1920x5000: 123 cards
+        - 1920x10000: 165 cards
+        """
         self.headless = headless
-        self.viewport = viewport or {"width": 1920, "height": 10000}
+        self.viewport = viewport or {"width": 1920, "height": 1080}
         self.browser_manager: Optional[PlaywrightBrowserManager] = None
         self.page: Optional[Page] = None
 
