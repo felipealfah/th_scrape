@@ -709,9 +709,185 @@ python3 test_scrape_url_feature.py
 
 ---
 
-**Última Atualização:** 2026-01-06
-**Próxima Revisão:** 2026-01-10
-**Status:** ✅ FASE 2.1 COMPLETA (Job Queue + Webhook + Limpeza Produção)
+---
+
+## Fase 4: Scraping de Canais Individuais com Sessão Persistente (⏳ PLANEJADO)
+
+### 4.1 - Session Manager (Preparação)
+- [ ] Criar arquivo `app/core/session_manager.py`
+- [ ] Implementar classe `SessionManager` com:
+  - [ ] `__init__()` - inicializar dicts de sessões
+  - [ ] `create_session()` - armazenar browser com session_id
+  - [ ] `get_session()` - recuperar browser da sessão
+  - [ ] `close_session()` - fechar browser e remover
+  - [ ] `cleanup_expired_sessions()` - limpar sessões > 30min
+  - [ ] Thread-safe locks para operações concorrentes
+- [ ] Testes unitários da SessionManager
+
+### 4.2 - Endpoint /login (Criar Sessão)
+- [ ] Criar POST `/api/v1/tubehunt/login` em `app/api/v1/tubehunt.py`
+- [ ] Schema `LoginRequest` com username/password (opcionais)
+- [ ] Schema `LoginResponse` com session_id, status, expires_in
+- [ ] Refatorar TubeHuntService:
+  - [ ] Método `login_only()` - faz login E NÃO fecha browser
+  - [ ] Retorna page object para ser armazenado
+- [ ] Integração com SessionManager
+- [ ] Validação de credenciais
+- [ ] Error handling: credenciais inválidas (401)
+- [ ] Tests para login bem-sucedido e falhado
+
+### 4.3 - Schema para Dados de Canal Individual
+- [ ] Criar `ChannelDetailedData` schema com campos:
+  - [ ] `channel_link`: URL (str)
+  - [ ] `keywords`: lista de strings
+  - [ ] `subjects`: lista de strings
+  - [ ] `niches`: lista de strings
+  - [ ] `views_30_days`: string com número formatado
+  - [ ] `revenue_30_days`: string com valor formatado
+  - [ ] `additional_data`: dict para dados futuros
+- [ ] Adicionar validações Pydantic
+- [ ] Adicionar exemplos para Swagger
+- [ ] Criar `ScrapeChannelRequest` schema com:
+  - [ ] `session_id`: UUID string
+  - [ ] `channel_link`: URL completa
+  - [ ] `webhook_url`: opcional
+
+### 4.4 - Método de Scraping de Canal Individual
+- [ ] Criar método `scrape_channel_details()` em TubeHuntService
+- [ ] Aceita page (Playwright Page object) e channel_link
+- [ ] **Etapa 1: Navegação**
+  - [ ] Navegar para channel_link
+  - [ ] Aguardar página carregar (wait_for_load_state("networkidle"))
+  - [ ] Verificar se estamos na URL correta
+- [ ] **Etapa 2: Extração de Keywords** (seletores a confirmar)
+  - [ ] Encontrar elemento com seletor CSS/XPath
+  - [ ] Extrair texto e fazer parse em lista
+  - [ ] Tratar casos vazios
+- [ ] **Etapa 3: Extração de Subjects** (seletores a confirmar)
+  - [ ] Encontrar elemento com seletor CSS/XPath
+  - [ ] Extrair texto e fazer parse em lista
+  - [ ] Tratar casos vazios
+- [ ] **Etapa 4: Extração de Nichos** (seletores a confirmar)
+  - [ ] Encontrar elemento com seletor CSS/XPath
+  - [ ] Extrair texto e fazer parse em lista
+  - [ ] Tratar casos vazios
+- [ ] **Etapa 5: Extração de Views (30 dias)** (seletores a confirmar)
+  - [ ] Encontrar elemento com seletor CSS/XPath
+  - [ ] Extrair e validar formato (número/string)
+- [ ] **Etapa 6: Extração de Receita (30 dias)** (seletores a confirmar)
+  - [ ] Encontrar elemento com seletor CSS/XPath
+  - [ ] Extrair e validar formato (valor monetário/string)
+- [ ] **Tratamento de Erros**
+  - [ ] Timeout de navegação
+  - [ ] Elemento não encontrado
+  - [ ] Página não carregou
+  - [ ] Retornar erro descritivo
+- [ ] **Logging**
+  - [ ] Log de cada etapa de extração
+  - [ ] Log de tempo total
+- [ ] Tests para cada campo individual
+
+### 4.5 - Endpoint POST /api/v1/tubehunt/scrape-channel
+- [ ] Criar endpoint em `app/api/v1/tubehunt.py`
+- [ ] Aceita ScrapeChannelRequest:
+  - [ ] Validar session_id
+  - [ ] Validar channel_link (URL format)
+  - [ ] Validar webhook_url se fornecido
+- [ ] Verificar se sessão existe e está ativa
+- [ ] Criar job no JobManager (reutilizar classe existente)
+- [ ] Iniciar background thread para scraping
+  - [ ] Chamar `scrape_channel_details()` com page da sessão
+  - [ ] Implementar retry 3x com backoff exponencial (2s, 4s, 8s)
+  - [ ] Se falhar 3x: enviar webhook com status "failed"
+  - [ ] Se sucesso: enviar webhook com resultado
+- [ ] Retornar 202 Accepted com job_id imediatamente
+- [ ] Error handling:
+  - [ ] Session not found (404)
+  - [ ] Invalid channel_link (400)
+  - [ ] Job creation failed (500)
+- [ ] Tests para endpoint
+
+### 4.6 - Endpoint GET /api/v1/tubehunt/scrape-channel/result/{job_id}
+- [ ] Criar endpoint em `app/api/v1/tubehunt.py`
+- [ ] Recuperar job do JobManager
+- [ ] Retornar response conforme status:
+  - [ ] **pending/processing**: `{job_id, status, progress, created_at}`
+  - [ ] **completed**: `{job_id, status, result: ChannelDetailedData, execution_time_seconds, completed_at}`
+  - [ ] **failed**: `{job_id, status, error, last_error, attempts, failed_at}`
+- [ ] Status 404 se job_id não existe
+- [ ] Tests para polling
+
+### 4.7 - Webhook Caller (Atualizar Existente)
+- [ ] Usar WebhookCaller existente em `app/services/webhook.py`
+- [ ] Adaptar para enviar ChannelDetailedData no body
+- [ ] Manter retry logic (3 tentativas, exponential backoff)
+- [ ] Logging de cada tentativa
+- [ ] Tests para webhook delivery
+
+### 4.8 - Endpoint DELETE /api/v1/tubehunt/sessions/{session_id}
+- [ ] Criar endpoint em `app/api/v1/tubehunt.py`
+- [ ] Chamar `session_manager.close_session(session_id)`
+- [ ] Fechar browser Playwright properlly
+- [ ] Remover session da memória
+- [ ] Retornar 200 OK com confirmação
+- [ ] Retornar 404 se session não existe
+- [ ] Tests para cleanup
+
+### 4.9 - Script de Teste Local (1200 Canais)
+- [ ] Criar `test_1200_channels_local.py` para teste local
+- [ ] Loop sobre arquivo com 1200 URLs de canais
+- [ ] Para cada canal:
+  - [ ] Chamar POST /login (uma única vez no início)
+  - [ ] Chamar POST /scrape-channel com session_id
+  - [ ] Aguardar resultado via GET /result/{job_id}
+  - [ ] Salvar resultado em JSON
+  - [ ] Log de progresso
+- [ ] Ao fim: chamar DELETE /sessions/{session_id}
+- [ ] Medir tempo total
+
+### 4.10 - Script de Teste API (50 Canais com Webhook)
+- [ ] Criar `test_50_channels_api_webhook.py`
+- [ ] Simular webhook receiver (servidor de teste)
+- [ ] Login via API
+- [ ] Disparar 50 canais com webhook_url
+- [ ] Coletar respostas de webhook
+- [ ] Validar integridade dos dados
+- [ ] Medir performance
+
+### 4.11 - Testes de Erro e Retry
+- [ ] Teste: session_id inválido → 404
+- [ ] Teste: channel_link inválido → 400
+- [ ] Teste: página não carrega → retry 3x → fail com erro
+- [ ] Teste: elemento não encontrado → retry 3x → fail com erro
+- [ ] Teste: timeout na página → retry com backoff
+- [ ] Teste: webhook falha → retry logic
+- [ ] Teste: sessão expira durante scraping → erro descritivo
+
+### 4.12 - Testes de Timeout e Expiração
+- [ ] Teste: sessão expira após 30min
+- [ ] Teste: tentar usar sessão expirada → 404
+- [ ] Teste: cleanup_expired_sessions remove sessões antigas
+- [ ] Teste: múltiplas sessões simultâneas
+
+### 4.13 - Documentação
+- [ ] Atualizar PLAN.md com implementação final
+- [ ] Atualizar TODO.md com tasks completas
+- [ ] Exemplos de curl para cada endpoint
+- [ ] Exemplos de Python para teste local
+- [ ] Guia de troubleshooting
+- [ ] Swagger documentation updated
+
+### 4.14 - Integração com n8n
+- [ ] Testar webhook com URL real de n8n (se disponível)
+- [ ] Validar formato de resposta
+- [ ] Testar retry logic com falha simulada
+- [ ] Confirmar dados chegam corretos
+
+---
+
+**Última Atualização:** 2026-01-23
+**Próxima Revisão:** 2026-01-25
+**Status:** ⏳ FASE 4 PLANEJADA (Aguardando seletores HTML)
 **Responsável:** Felipe Full
-**Branch Atual:** feature/playwright-migration
-**Branch Próxima:** main (para merge)
+**Branch Atual:** main
+**Branch Próxima:** feature/session-based-channel-scraping

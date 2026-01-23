@@ -763,7 +763,20 @@ Se falhar 3x consecutivas:
   → N8n recebe e pode reprocessar manualmente
 ```
 
-### 12.3 Novos Endpoints
+### 12.3 Dados a Extrair por Canal
+
+Quando acessar a página do canal (`https://app.tubehunt.io/channel/{channel_id}`), os seguintes dados devem ser extraídos:
+
+1. **Keywords** - Palavras-chave principais associadas ao canal
+2. **Assuntos** - Tópicos/assuntos principais
+3. **Nichos** - Categorias/nichos nos quais o canal se enquadra
+4. **Views (30 dias)** - Número de visualizações nos últimos 30 dias
+5. **[Dados adicionais a confirmar via HTML]** - Será definido conforme você passar os seletores
+6. **Receita (30 dias)** - Estimativa de receita nos últimos 30 dias
+
+**Próximo Passo:** Você vai passar os seletores HTML para cada um desses campos, que serão usados para fazer o scraping específico.
+
+### 12.4 Novos Endpoints
 
 #### 1. Login (Cria Sessão)
 ```http
@@ -818,6 +831,16 @@ Response (404 Not Found):
   "error": "SessionNotFound",
   "message": "Sessão não encontrada ou expirada. Faça login novamente."
 }
+
+Fluxo:
+1. Aceita session_id da requisição anterior (/login)
+2. Aceita channel_link completo (https://app.tubehunt.io/channel/...)
+3. Extrai o channel_id da URL automaticamente
+4. Reutiliza browser da sessão (já autenticado)
+5. Navega para channel_link
+6. Aguarda página carregar completamente
+7. Extrai dados: keywords, assuntos, nichos, views (30d), receita (30d), etc
+8. Retorna job_id imediatamente (assincronamente)
 ```
 
 #### 3. Resultado do Scraping (Polling)
@@ -837,30 +860,26 @@ Response (200 OK - Completo):
   "job_id": "job-550e8400-abc-123",
   "status": "completed",
   "result": {
-    "channel_name": "O Caminho Sagrado",
     "channel_link": "https://app.tubehunt.io/channel/UCo9J4v08H7so8znUgydIC6Q",
-    "channel_handle": "@ocaminhosagrado-2026",
-    "country": "(PT)",
-    "subscribers": "3k",
-    "is_verified": true,
-    "is_monetized": true,
-    "total_views": "61k",
-    "views_last_60_days": "105k",
-    "average_views_per_video": "20k",
-    "time_since_first_video": "há 5 dias",
-    "total_videos": "3",
-    "outlier_score": "22×",
-    "recent_videos": [
-      {
-        "title": "7 PECADOS Que Você Deve CONFESSAR...",
-        "video_link": "https://youtube.com/watch?v=Rk53pD3AJTA",
-        "thumbnail_url": "https://i.ytimg.com/vi/Rk53pD3AJTA/mqdefault.jpg",
-        "duration": "54:01",
-        "views": "75k",
-        "comments": "775",
-        "uploaded_time": "há 4 dias"
-      }
-    ]
+    "keywords": [
+      "palavra-chave-1",
+      "palavra-chave-2",
+      "palavra-chave-3"
+    ],
+    "subjects": [
+      "Assunto 1",
+      "Assunto 2",
+      "Assunto 3"
+    ],
+    "niches": [
+      "Nicho 1",
+      "Nicho 2"
+    ],
+    "views_30_days": "15000",
+    "revenue_30_days": "$450.00",
+    "additional_data": {
+      // Dados adicionais conforme HTML passar
+    }
   },
   "execution_time_seconds": 12.5,
   "completed_at": "2026-01-23T15:30:17Z"
@@ -948,26 +967,61 @@ curl -X DELETE http://api.com/api/v1/tubehunt/sessions/$SESSION_ID
 - [ ] Criar POST `/api/v1/tubehunt/login` endpoint
 - [ ] Refatorar TubeHuntService para não fechar browser após login
 - [ ] Retornar session_id válido
+- [ ] Armazenar browser em SessionManager
 - [ ] Testes unitários
 
-**Fase 4.3: Endpoint /scrape-channel**
+**Fase 4.3: Schema para Dados de Canal Individual**
+- [ ] Criar `ChannelDetailedData` schema com campos:
+  - `channel_link`: URL do canal
+  - `keywords`: lista de strings
+  - `subjects`: lista de strings
+  - `niches`: lista de strings
+  - `views_30_days`: string (número formatado)
+  - `revenue_30_days`: string (valor formatado)
+  - `additional_data`: dict para dados adicionais
+- [ ] Adicionar validações e exemplos
+
+**Fase 4.4: Método de Scraping de Canal Individual**
+- [ ] Criar método `scrape_channel_details()` em TubeHuntService
+  - [ ] Aceita page (Playwright) e channel_link
+  - [ ] Navega para channel_link
+  - [ ] Aguarda página carregar completamente
+  - [ ] Extrai keywords (usando seletores HTML)
+  - [ ] Extrai subjects (usando seletores HTML)
+  - [ ] Extrai nichos (usando seletores HTML)
+  - [ ] Extrai views_30_days (usando seletores HTML)
+  - [ ] Extrai revenue_30_days (usando seletores HTML)
+  - [ ] Trata erros e timeouts
+  - [ ] Retorna ChannelDetailedData estruturado
+
+**Fase 4.5: Endpoint /scrape-channel**
 - [ ] Criar POST `/api/v1/tubehunt/scrape-channel` endpoint
+- [ ] Validar session_id existe
 - [ ] Implementar job queue para processar um canal de cada vez
-- [ ] Adicionar retry automático 3x com exponential backoff
+- [ ] Chamar scrape_channel_details() em background thread
+- [ ] Adicionar retry automático 3x com exponential backoff (2s, 4s, 8s)
 - [ ] Adicionar heartbeat/session validation antes do scrape
-- [ ] Webhook callback ao completar
+- [ ] Webhook callback ao completar (se webhook_url fornecido)
+- [ ] Retornar job_id imediatamente (status 202)
 
-**Fase 4.4: Endpoint /result/{job_id}**
+**Fase 4.6: Endpoint /result/{job_id}**
 - [ ] Criar GET `/api/v1/tubehunt/scrape-channel/result/{job_id}` endpoint
-- [ ] Retornar status de progresso e resultado
+- [ ] Retornar status: processing, completed, ou failed
+- [ ] Retornar resultado completo quando completed
+- [ ] Retornar erro quando failed
 
-**Fase 4.5: Cleanup e Testes Integrados**
+**Fase 4.7: Cleanup e Testes Integrados**
 - [ ] Criar DELETE `/api/v1/tubehunt/sessions/{session_id}` endpoint
-- [ ] Testes com 50+ canais sequenciais
+- [ ] Fechar browser e remover da memória
+- [ ] Testes com 1200 canais localmente (script de teste)
+- [ ] Testes com 50+ canais via API
 - [ ] Validar retry com falhas simuladas
+- [ ] Validar webhook delivery com sucesso
+- [ ] Testes de timeout e expiração de sessão
 
 ---
 
-**Versão:** 3.3-SESSION-BASED-SCRAPING-PLANNED
+**Versão:** 3.4-SESSION-BASED-CHANNEL-SCRAPING-IMPLEMENTATION
 **Data:** 2026-01-23
-**Status:** ⏳ Planejado para próximas iterações
+**Status:** ⏳ Pronto para implementação (aguardando seletores HTML)
+**Próximo Passo:** Receber seletores CSS/XPath para cada campo de dados
