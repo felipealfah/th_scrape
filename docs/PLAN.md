@@ -665,3 +665,309 @@ POST /api/v1/tubehunt/scrape-channels/start
 ```bash
 python3 test_scrape_url_feature.py
 ```
+
+---
+
+## 12. Fase 4: Scraping de Canais Individuais com Sessão Persistente (PLANEJADO) ⏳
+
+### Visão Geral
+**Objetivo:** Criar endpoints para login uma única vez e reutilizar a mesma sessão para scraping de múltiplos canais (um de cada vez).
+
+**Casos de Uso:**
+1. **Primeira extração:** 1200 canais - rodando localmente na máquina do usuário (sem API)
+2. **Extrações diárias:** 50 canais/dia - processados através da API assincronamente
+
+**Stack de Decisões Arquiteturais:**
+
+| Aspecto | Decisão | Justificativa |
+|---------|---------|---------------|
+| **Síncrono/Assincronamente** | Assincronamente com webhooks | 50+ canais precisam ser processados sem bloquear a API |
+| **Gerenciamento de Sessão** | Persistir browser em memória com session_id | Reutilizar cookie/autenticação entre requisições |
+| **Expiração de Sessão** | Refresh automático + heartbeat | Detectar expiração e re-autenticar sem intervenção |
+| **Tratamento de Erros** | Retry 3x + webhook com detalhes | Recuperação automática + feedback ao usuário |
+| **Processamento** | Fila + background workers | Processar um canal de cada vez, sequencialmente |
+| **Implementação** | Simples (sequencial) → Paralelo (futuro) | MVP sem complexidade desnecessária |
+
+### 12.1 Arquitetura de Fluxo
+
+```
+FASE 1: LOGIN (Uma única vez)
+═════════════════════════════════════════════════════════════
+POST /api/v1/tubehunt/login
+  ↓
+Criar browser Playwright → Fazer login → Salvar session_id
+Retorna: {"session_id": "uuid-abc-123", "expires_in": 1800}
+Browser permanece aberto em memória
+
+
+FASE 2: SCRAPE DE CANAL INDIVIDUAL (Pode ser chamado N vezes)
+═════════════════════════════════════════════════════════════
+POST /api/v1/tubehunt/scrape-channel
+{
+  "session_id": "uuid-abc-123",
+  "channel_link": "https://app.tubehunt.io/channel/UCxxx",
+  "webhook_url": "https://seu-webhook.com/resultado"
+}
+  ↓
+Retorna imediatamente: {"job_id": "job-xyz-789", "status": "queued"}
+  ↓
+Background task:
+  1. Recupera browser com session_id
+  2. Acessa channel_link (já autenticado)
+  3. Espera carregar elementos
+  4. Faz scrape do conteúdo específico
+  5. Envia webhook com resultado
+  ↓
+Webhook callback:
+POST https://seu-webhook.com/resultado
+{
+  "job_id": "job-xyz-789",
+  "status": "completed",
+  "result": {
+    "channel_name": "...",
+    "channel_link": "...",
+    "subscribers": "...",
+    ... (todos os dados do canal)
+  },
+  "execution_time_seconds": 12.5
+}
+
+
+FASE 3: CLEANUP (Opcional)
+═════════════════════════════════════════════════════════════
+DELETE /api/v1/tubehunt/sessions/{session_id}
+  ↓
+Fecha browser → Remove session_id da memória
+Retorna: {"status": "closed", "message": "Sessão encerrada"}
+```
+
+### 12.2 Fluxo de Erro com Retry Automático
+
+```
+Tenta scrape com session_id
+  ↓
+Se falhar (timeout/erro de navegação):
+  → Retry 1: Aguarda 2s, tenta novamente
+    → Se sucesso: retorna resultado
+    → Se falhar: continua
+  → Retry 2: Aguarda 4s, tenta novamente
+    → Se sucesso: retorna resultado
+    → Se falhar: continua
+  → Retry 3: Aguarda 8s, tenta novamente
+    → Se sucesso: retorna resultado
+    → Se falhar: continua
+  ↓
+Se falhar 3x consecutivas:
+  → Envia webhook com status "failed"
+  → Inclui motivo do erro na payload
+  → N8n recebe e pode reprocessar manualmente
+```
+
+### 12.3 Novos Endpoints
+
+#### 1. Login (Cria Sessão)
+```http
+POST /api/v1/tubehunt/login
+Content-Type: application/json
+
+{
+  "username": "felipealfah@gmail.com",  // opcional - usa .env se não informado
+  "password": "Tub3h@17560919"          // opcional - usa .env se não informado
+}
+
+Response (200 OK):
+{
+  "session_id": "550e8400-e29b-41d4-a716-446655440000",
+  "status": "logged_in",
+  "created_at": "2026-01-23T15:30:00Z",
+  "expires_in": 1800,
+  "message": "Login realizado com sucesso"
+}
+
+Response (401 Unauthorized):
+{
+  "status": "failed",
+  "error": "Credenciais inválidas",
+  "message": "Email ou senha incorretos"
+}
+```
+
+#### 2. Scrape de Canal Individual (Assincronamente)
+```http
+POST /api/v1/tubehunt/scrape-channel
+Content-Type: application/json
+
+{
+  "session_id": "550e8400-e29b-41d4-a716-446655440000",
+  "channel_link": "https://app.tubehunt.io/channel/UCo9J4v08H7so8znUgydIC6Q",
+  "webhook_url": "https://criadordigital-n8n.com/webhook/resultado"  // opcional
+}
+
+Response (202 Accepted):
+{
+  "job_id": "job-550e8400-abc-123",
+  "status": "queued",
+  "created_at": "2026-01-23T15:30:05Z",
+  "message": "Scraping de canal enfileirado",
+  "estimated_wait_seconds": 15
+}
+
+Response (404 Not Found):
+{
+  "status": "failed",
+  "error": "SessionNotFound",
+  "message": "Sessão não encontrada ou expirada. Faça login novamente."
+}
+```
+
+#### 3. Resultado do Scraping (Polling)
+```http
+GET /api/v1/tubehunt/scrape-channel/result/{job_id}
+
+Response (200 OK - Aguardando):
+{
+  "job_id": "job-550e8400-abc-123",
+  "status": "processing",
+  "progress": "Acessando página do canal...",
+  "created_at": "2026-01-23T15:30:05Z"
+}
+
+Response (200 OK - Completo):
+{
+  "job_id": "job-550e8400-abc-123",
+  "status": "completed",
+  "result": {
+    "channel_name": "O Caminho Sagrado",
+    "channel_link": "https://app.tubehunt.io/channel/UCo9J4v08H7so8znUgydIC6Q",
+    "channel_handle": "@ocaminhosagrado-2026",
+    "country": "(PT)",
+    "subscribers": "3k",
+    "is_verified": true,
+    "is_monetized": true,
+    "total_views": "61k",
+    "views_last_60_days": "105k",
+    "average_views_per_video": "20k",
+    "time_since_first_video": "há 5 dias",
+    "total_videos": "3",
+    "outlier_score": "22×",
+    "recent_videos": [
+      {
+        "title": "7 PECADOS Que Você Deve CONFESSAR...",
+        "video_link": "https://youtube.com/watch?v=Rk53pD3AJTA",
+        "thumbnail_url": "https://i.ytimg.com/vi/Rk53pD3AJTA/mqdefault.jpg",
+        "duration": "54:01",
+        "views": "75k",
+        "comments": "775",
+        "uploaded_time": "há 4 dias"
+      }
+    ]
+  },
+  "execution_time_seconds": 12.5,
+  "completed_at": "2026-01-23T15:30:17Z"
+}
+
+Response (200 OK - Falhou com retry):
+{
+  "job_id": "job-550e8400-abc-123",
+  "status": "failed",
+  "error": "MaxRetriesExceeded",
+  "message": "Falhou após 3 tentativas de scraping",
+  "attempts": 3,
+  "last_error": "Timeout aguardando carregamento da página",
+  "failed_at": "2026-01-23T15:30:45Z"
+}
+```
+
+#### 4. Fechar Sessão (Cleanup)
+```http
+DELETE /api/v1/tubehunt/sessions/{session_id}
+
+Response (200 OK):
+{
+  "session_id": "550e8400-e29b-41d4-a716-446655440000",
+  "status": "closed",
+  "message": "Browser fechado e sessão removida da memória",
+  "closed_at": "2026-01-23T15:35:00Z"
+}
+
+Response (404 Not Found):
+{
+  "error": "SessionNotFound",
+  "message": "Sessão não encontrada"
+}
+```
+
+### 12.4 Casos de Uso Prático
+
+**Caso 1: Primeira Extração de 1200 Canais (Local)**
+```bash
+# 1. Fazer login (sessão válida por 30 min)
+curl -X POST http://localhost:8000/api/v1/tubehunt/login
+
+# Resposta: session_id = "abc-123"
+
+# 2. Em loop - para cada canal dos 1200:
+for canal in canais_1200.txt; do
+  curl -X POST http://localhost:8000/api/v1/tubehunt/scrape-channel \
+    -d "{\"session_id\": \"abc-123\", \"channel_link\": \"$canal\"}"
+done
+
+# 3. Ao fim, fechar sessão:
+curl -X DELETE http://localhost:8000/api/v1/tubehunt/sessions/abc-123
+```
+
+**Caso 2: Extração Diária de 50 Canais (Via API + Webhook)**
+```bash
+# 1. Login (via API)
+SESSION_ID=$(curl -s -X POST http://api.com/api/v1/tubehunt/login | jq -r .session_id)
+
+# 2. Disparar scraping de cada canal com webhook
+for i in {1..50}; do
+  CANAL=$(curl https://seu-banco-de-dados.com/proximo-canal)
+  curl -X POST http://api.com/api/v1/tubehunt/scrape-channel \
+    -d "{
+      \"session_id\": \"$SESSION_ID\",
+      \"channel_link\": \"$CANAL\",
+      \"webhook_url\": \"https://n8n.com/webhook-resultado\"
+    }"
+done
+
+# 3. Fechar quando acabar
+curl -X DELETE http://api.com/api/v1/tubehunt/sessions/$SESSION_ID
+```
+
+### 12.5 Plano de Implementação
+
+**Fase 4.1: Session Manager (Próximas iterações)**
+- [ ] Criar `app/core/session_manager.py` com SessionManager
+- [ ] Implementar create_session(), get_session(), close_session()
+- [ ] Implementar cleanup_expired_sessions() como background task
+- [ ] Adicionar thread-safety com locks
+
+**Fase 4.2: Endpoint /login**
+- [ ] Criar POST `/api/v1/tubehunt/login` endpoint
+- [ ] Refatorar TubeHuntService para não fechar browser após login
+- [ ] Retornar session_id válido
+- [ ] Testes unitários
+
+**Fase 4.3: Endpoint /scrape-channel**
+- [ ] Criar POST `/api/v1/tubehunt/scrape-channel` endpoint
+- [ ] Implementar job queue para processar um canal de cada vez
+- [ ] Adicionar retry automático 3x com exponential backoff
+- [ ] Adicionar heartbeat/session validation antes do scrape
+- [ ] Webhook callback ao completar
+
+**Fase 4.4: Endpoint /result/{job_id}**
+- [ ] Criar GET `/api/v1/tubehunt/scrape-channel/result/{job_id}` endpoint
+- [ ] Retornar status de progresso e resultado
+
+**Fase 4.5: Cleanup e Testes Integrados**
+- [ ] Criar DELETE `/api/v1/tubehunt/sessions/{session_id}` endpoint
+- [ ] Testes com 50+ canais sequenciais
+- [ ] Validar retry com falhas simuladas
+
+---
+
+**Versão:** 3.3-SESSION-BASED-SCRAPING-PLANNED
+**Data:** 2026-01-23
+**Status:** ⏳ Planejado para próximas iterações
