@@ -767,14 +767,59 @@ Se falhar 3x consecutivas:
 
 Quando acessar a página do canal (`https://app.tubehunt.io/channel/{channel_id}`), os seguintes dados devem ser extraídos:
 
-1. **Keywords** - Palavras-chave principais associadas ao canal
-2. **Assuntos** - Tópicos/assuntos principais
-3. **Nichos** - Categorias/nichos nos quais o canal se enquadra
-4. **Views (30 dias)** - Número de visualizações nos últimos 30 dias
-5. **[Dados adicionais a confirmar via HTML]** - Será definido conforme você passar os seletores
-6. **Receita (30 dias)** - Estimativa de receita nos últimos 30 dias
+#### **1. Keywords** ✅ (HTML recebido)
+**Estrutura HTML:**
+```html
+<div class="col">
+  <p class="mb-2"><strong>Keywords</strong> do canal:</p>
+  <span class="badge badge-soft rounded-pill">cruceros 2025<span class="opacity-0">,</span></span>
+  <span class="badge badge-soft rounded-pill">viajar en crucero<span class="opacity-0">,</span></span>
+  ...
+</div>
+```
 
-**Próximo Passo:** Você vai passar os seletores HTML para cada um desses campos, que serão usados para fazer o scraping específico.
+**Seletor CSS:** `span.badge.badge-soft.rounded-pill`
+**Estratégia de Extração:**
+1. Procurar elemento `p` que contém texto "Keywords"
+2. Pegar todos os `span.badge.badge-soft.rounded-pill` que são siblings após esse `p` (ou no mesmo container)
+3. Para cada span, extrair o texto (o texto está no primeiro node, ignorar a inner span com `opacity-0`)
+4. Resultado: Lista de strings `["cruceros 2025", "viajar en crucero", ...]`
+
+**XPath:** `//p[contains(., 'Keywords')]/following-sibling::span[@class='badge badge-soft rounded-pill']`
+
+---
+
+#### **2. Assuntos** ✅ (HTML recebido)
+**Estrutura HTML:**
+```html
+<div class="col">
+  <p class="mb-2"><strong>Assuntos</strong> (identificados automaticamente):</p>
+  <span class="badge badge-soft rounded-pill">Tourism</span>
+  <span class="badge badge-soft rounded-pill">Food</span>
+  <span class="badge badge-soft rounded-pill">Lifestyle (sociology)</span>
+  <span class="badge badge-soft rounded-pill">Society</span>
+</div>
+```
+
+**Seletor CSS:** `span.badge.badge-soft.rounded-pill`
+**Estratégia de Extração:**
+1. Procurar elemento `p` que contém texto "Assuntos"
+2. Pegar todos os `span.badge.badge-soft.rounded-pill` que são siblings após esse `p`
+3. Extrair o texto de cada span
+4. Resultado: Lista de strings `["Tourism", "Food", "Lifestyle (sociology)", "Society"]`
+
+**XPath:** `//p[contains(., 'Assuntos')]/following-sibling::span[@class='badge badge-soft rounded-pill']`
+
+---
+
+#### **3. Nichos** ⏳ (Aguardando HTML)
+_A estrutura será similar a Keywords e Assuntos_
+
+#### **4. Views (30 dias)** ⏳ (Aguardando HTML)
+_Formato esperado: string numérica (ex: "15000" ou "15k")_
+
+#### **5. Receita (30 dias)** ⏳ (Aguardando HTML)
+_Formato esperado: string monetária (ex: "$450.00")_
 
 ### 12.4 Novos Endpoints
 
