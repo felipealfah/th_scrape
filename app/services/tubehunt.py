@@ -5,6 +5,7 @@ from typing import Optional, Dict, Any
 from playwright.sync_api import Page
 from app.core.browser import PlaywrightBrowserManager
 from app.core.config import settings
+from app.schemas.tubehunt import ChannelDetailedData
 
 logger = logging.getLogger(__name__)
 
@@ -573,6 +574,154 @@ class TubeHuntService:
                 "url": None,
                 "error": str(e),
             }
+
+    def scrape_channel_details(self, page: Page, channel_link: str) -> Optional[ChannelDetailedData]:
+        """
+        Extrair dados detalhados de um canal individual usando XPath selectors
+
+        Args:
+            page: Playwright Page object (deve estar logado)
+            channel_link: URL completa do canal (ex: https://app.tubehunt.io/channel/UCEvkNQR22vQYzp2hil_Z9kA)
+
+        Returns:
+            ChannelDetailedData schema com dados extraídos, ou None em caso de erro
+        """
+        try:
+            logger.info(f"Acessando canal: {channel_link}")
+            logger.info(f"Page object válido: {page is not None}")
+            logger.info(f"Page URL antes de goto: {page.url if page else 'N/A'}")
+
+            try:
+                page.goto(channel_link, timeout=120000, wait_until="networkidle")
+                logger.info("✅ Canal carregado com sucesso")
+                logger.info(f"Page URL após goto: {page.url}")
+            except Exception as e:
+                logger.error(f"❌ Erro ao navegar para o canal: {str(e)}", exc_info=True)
+                raise
+
+            # Aguardar carregamento de elementos com wait_for_load_state
+            try:
+                page.wait_for_load_state("networkidle", timeout=30000)
+                logger.info("✅ Página em estado networkidle")
+            except Exception as e:
+                logger.warning(f"⚠️ Timeout no networkidle: {e}")
+
+            # Aguardar seletores específicos
+            try:
+                page.wait_for_selector("span.badge", timeout=30000)
+                logger.info("✅ Elementos do canal carregados")
+            except Exception as e:
+                logger.warning(f"⚠️ Timeout aguardando elementos: {e}")
+                logger.info(f"HTML da página (primeiros 500 chars): {page.content()[:500] if page else 'N/A'}")
+
+            time.sleep(3)  # Aumentado para 3 segundos para melhor carregamento
+
+            # Restrição: Pegar apenas a seção inicial de dados do canal (não os vídeos)
+            # A seção de canal está em: //div[@class='d-flex flex-wrap gap-1 mt-2 small']
+            channel_data_section_xpath = "//div[@class='d-flex flex-wrap gap-1 mt-2 small']"
+
+            # 1. Extrair Keywords do canal (apenas da seção de dados do canal, não dos vídeos)
+            logger.info("Extraindo keywords do canal...")
+            keywords = []
+            try:
+                keyword_xpath = f"{channel_data_section_xpath}//p[contains(., 'Keywords do canal')]/following-sibling::span[@class='badge badge-soft rounded-pill']"
+                logger.info(f"Usando XPath para keywords: {keyword_xpath}")
+                keyword_elements = page.query_selector_all(keyword_xpath)
+                logger.info(f"Elementos keywords encontrados: {len(keyword_elements)}")
+                for elem in keyword_elements:
+                    text = elem.inner_text().strip()
+                    if text:
+                        keywords.append(text)
+                logger.info(f"✅ Keywords extraídas: {len(keywords)} encontradas")
+            except Exception as e:
+                logger.warning(f"⚠️ Erro ao extrair keywords: {e}")
+
+            # 2. Extrair Assuntos (Subjects) do canal (apenas da seção de dados do canal)
+            logger.info("Extraindo assuntos do canal...")
+            subjects = []
+            try:
+                subject_xpath = f"{channel_data_section_xpath}//p[contains(., 'Assuntos')]/following-sibling::span[@class='badge badge-soft rounded-pill']"
+                logger.info(f"Usando XPath para subjects: {subject_xpath}")
+                subject_elements = page.query_selector_all(subject_xpath)
+                logger.info(f"Elementos subjects encontrados: {len(subject_elements)}")
+                for elem in subject_elements:
+                    text = elem.inner_text().strip()
+                    if text:
+                        subjects.append(text)
+                logger.info(f"✅ Assuntos extraídos: {len(subjects)} encontrados")
+            except Exception as e:
+                logger.warning(f"⚠️ Erro ao extrair assuntos: {e}")
+
+            # 3. Extrair Nichos do canal (apenas da seção de dados do canal)
+            logger.info("Extraindo nichos do canal...")
+            niches = []
+            try:
+                niche_xpath = f"{channel_data_section_xpath}//p[contains(., 'Nicho')]/following-sibling::span[@class='badge badge-soft rounded-pill']//a"
+                logger.info(f"Usando XPath para niches: {niche_xpath}")
+                niche_elements = page.query_selector_all(niche_xpath)
+                logger.info(f"Elementos niches encontrados: {len(niche_elements)}")
+                for elem in niche_elements:
+                    text = elem.inner_text().strip()
+                    if text:
+                        niches.append(text)
+                logger.info(f"✅ Nichos extraídos: {len(niches)} encontrados")
+            except Exception as e:
+                logger.warning(f"⚠️ Erro ao extrair nichos: {e}")
+
+            # 4. Extrair Views (30 dias) - Pode não estar disponível em todas as páginas
+            logger.info("Extraindo views (30 dias)...")
+            views_30_days = None
+            try:
+                # XPath corrigido para match exato com a estrutura HTML
+                # <div class="metric text-center">
+                #   <div class="label text-dark">Views (30 dias)</div>
+                #   <div class="value">54.91k</div>
+                # </div>
+                views_xpath = "//div[@class='metric text-center']//div[@class='label text-dark' and contains(., 'Views (30 dias)')]/following-sibling::div[@class='value']"
+                views_element = page.query_selector(views_xpath)
+                if views_element:
+                    views_30_days = views_element.inner_text().strip()
+                    logger.info(f"✅ Views: {views_30_days}")
+                else:
+                    logger.info("ℹ️ Views não encontrado (campo opcional)")
+            except Exception as e:
+                logger.info(f"ℹ️ Views não disponível: {e}")
+
+            # 5. Extrair Receita (30 dias) - Pode não estar disponível em todas as páginas
+            logger.info("Extraindo receita (30 dias)...")
+            revenue_30_days = None
+            try:
+                # XPath corrigido para match exato com a estrutura HTML
+                # <div class="metric text-center">
+                #   <div class="label text-dark">Receita (30 dias)</div>
+                #   <div class="value">$33,00 - $110,00</div>
+                # </div>
+                revenue_xpath = "//div[@class='metric text-center']//div[@class='label text-dark' and contains(., 'Receita (30 dias)')]/following-sibling::div[@class='value']"
+                revenue_element = page.query_selector(revenue_xpath)
+                if revenue_element:
+                    revenue_30_days = revenue_element.inner_text().strip()
+                    logger.info(f"✅ Receita: {revenue_30_days}")
+                else:
+                    logger.info("ℹ️ Receita não encontrado (campo opcional)")
+            except Exception as e:
+                logger.info(f"ℹ️ Receita não disponível: {e}")
+
+            # Construir e retornar ChannelDetailedData
+            channel_data = ChannelDetailedData(
+                channel_link=channel_link,
+                keywords=keywords,
+                subjects=subjects,
+                niches=niches,
+                views_30_days=views_30_days,
+                revenue_30_days=revenue_30_days
+            )
+
+            logger.info(f"✅ Dados do canal extraídos com sucesso: {channel_link}")
+            return channel_data
+
+        except Exception as e:
+            logger.error(f"❌ Erro ao scrape_channel_details: {str(e)}", exc_info=True)
+            return None
 
     def login_and_extract(self, wait_time: int = 15, extract_selector: str = "h1") -> Dict[str, Any]:
         """

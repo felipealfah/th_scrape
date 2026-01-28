@@ -105,35 +105,133 @@ return subjects
 
 ## Pending Selectors (Aguardando HTML)
 
-### 3. Nichos ⏳
+### 3. Nichos ✅
 
-**Expected Structure:** Similar a Keywords/Assuntos
+**URL Exemplo:** `https://app.tubehunt.io/channel/UCEvkNQR22vQYzp2hil_Z9kA`
 
-**Placeholder for HTML:**
+**HTML:**
+```html
+<div class="col">
+  <p class="mb-2"><strong>Nicho(s)</strong>:</p>
+  <span class="badge badge-soft rounded-pill">
+    <a href="https://app.tubehunt.io/long/cruises" class="text-dark">Cruzeiros</a>
+  </span>
+</div>
 ```
-[Aguardando HTML do usuário...]
+
+**Nota:** Diferente de Keywords/Assuntos! O texto está **dentro de um `<a>` tag** dentro do span.
+
+**Seletor CSS (complexo):** Não recomendado para esse caso - use XPath
+
+**XPath:** `//p[contains(., 'Nicho')]/following-sibling::span[@class='badge badge-soft rounded-pill']//a`
+
+**Alternative XPath:** `//p[contains(., 'Nicho')]/following-sibling::span//a`
+
+**Extract Strategy:**
+```python
+# Usando XPath
+niche_elements = page.query_selector_all("//p[contains(., 'Nicho')]/following-sibling::span[@class='badge badge-soft rounded-pill']//a")
+
+niches = []
+for elem in niche_elements:
+    text = elem.inner_text().strip()
+    if text:
+        niches.append(text)
+
+return niches
+```
+
+**Expected Output:**
+```python
+["Cruzeiros"]
+# ou múltiplos nichos se houver
+["Cruzeiros", "Viajería", "Lifestyle"]
 ```
 
 ---
 
-### 4. Views (30 dias) ⏳
+### 4. Views (30 dias) ✅
 
-**Expected Format:** Numeric string (ex: "15000", "15k", "1.5M")
+**URL Exemplo:** `https://app.tubehunt.io/channel/UCEvkNQR22vQYzp2hil_Z9kA`
 
-**Placeholder for HTML:**
+**HTML:**
+```html
+<div class="col">
+  <div class="metric text-center">
+    <div class="label text-dark">Views (30 dias)</div>
+    <div class="value">357.96k</div>
+  </div>
+</div>
 ```
-[Aguardando HTML do usuário...]
+
+**Estrutura:** Label seguido de value no mesmo container `.metric`
+
+**Seletor CSS:** Usar o padrão `div.value` após `div.label`
+
+**XPath:** `//div[@class='label' and contains(., 'Views (30 dias)')]/following-sibling::div[@class='value']`
+
+**Extract Strategy:**
+```python
+# Usando XPath
+views_element = page.query_selector("//div[@class='label' and contains(., 'Views (30 dias)')]/following-sibling::div[@class='value']")
+
+if views_element:
+    views_30d = views_element.inner_text().strip()
+    return views_30d
+else:
+    return None
+```
+
+**Expected Output:**
+```python
+"357.96k"
+# ou outras variações:
+"15000"
+"1.5M"
+"2.3k"
 ```
 
 ---
 
-### 5. Receita (30 dias) ⏳
+### 5. Receita (30 dias) ✅
 
-**Expected Format:** Monetary string (ex: "$450.00", "€350", "R$ 1200")
+**URL Exemplo:** `https://app.tubehunt.io/channel/UCEvkNQR22vQYzp2hil_Z9kA`
 
-**Placeholder for HTML:**
+**HTML:**
+```html
+<div class="col">
+  <div class="metric text-center">
+    <div class="label text-dark">Receita (30 dias)</div>
+    <div class="value">$239,00 - $781,00</div>
+  </div>
+</div>
 ```
-[Aguardando HTML do usuário...]
+
+**Estrutura:** Idêntica a Views (30 dias) - label + value no container `.metric`
+
+**Seletor CSS:** Usar o padrão `div.value` após `div.label`
+
+**XPath:** `//div[@class='label' and contains(., 'Receita (30 dias)')]/following-sibling::div[@class='value']`
+
+**Extract Strategy:**
+```python
+# Usando XPath
+revenue_element = page.query_selector("//div[@class='label' and contains(., 'Receita (30 dias)')]/following-sibling::div[@class='value']")
+
+if revenue_element:
+    revenue_30d = revenue_element.inner_text().strip()
+    return revenue_30d
+else:
+    return None
+```
+
+**Expected Output:**
+```python
+"$239,00 - $781,00"
+# ou outras variações:
+"$100 - $500"
+"€200 - €800"
+"R$ 1000 - R$ 5000"
 ```
 
 ---
@@ -181,17 +279,50 @@ Quando o padrão é `<div class="col">` com um `<p>` descritivo seguido por `<sp
 
 ---
 
-## Next Steps
+## Summary of All Selectors
 
-1. ✅ **Keywords:** Seletor CSS confirmado
-2. ✅ **Assuntos:** Seletor CSS confirmado
-3. ⏳ **Aguardando:** Nichos HTML
-4. ⏳ **Aguardando:** Views (30d) HTML
-5. ⏳ **Aguardando:** Revenue (30d) HTML
-
-Assim que o usuário enviar os HTMLs restantes, seções serão atualizadas com seletores finais.
+| Campo | Status | XPath | Padrão |
+|-------|--------|-------|--------|
+| **Keywords** | ✅ | `//p[contains(., 'Keywords')]/following-sibling::span[@class='badge badge-soft rounded-pill']` | Badge list (sem link) |
+| **Assuntos** | ✅ | `//p[contains(., 'Assuntos')]/following-sibling::span[@class='badge badge-soft rounded-pill']` | Badge list (sem link) |
+| **Nichos** | ✅ | `//p[contains(., 'Nicho')]/following-sibling::span[@class='badge badge-soft rounded-pill']//a` | Badge list **com link** |
+| **Views (30d)** | ✅ | `//div[@class='label' and contains(., 'Views (30 dias)')]/following-sibling::div[@class='value']` | Metric value |
+| **Receita (30d)** | ✅ | `//div[@class='label' and contains(., 'Receita (30 dias)')]/following-sibling::div[@class='value']` | Metric value |
 
 ---
 
-**Status:** Ready for implementation of Keywords + Subjects
-**Next Move:** Codificar `scrape_channel_details()` com esses 2 campos
+## Key Differences to Note
+
+### Badge Lists (Keywords, Assuntos, Nichos)
+```
+p (header com label)
+  ↓
+span.badge (múltiplos, siblings)
+  ├─ Texto direto (Keywords, Assuntos)
+  └─ <a> com texto (Nichos) ← DIFERENÇA!
+```
+
+### Metric Values (Views, Receita)
+```
+div.metric
+  ├─ div.label (com texto descritivo)
+  └─ div.value (com o valor numérico/monetário)
+```
+
+---
+
+## Next Steps
+
+1. ✅ **Keywords:** HTML + Seletor confirmado
+2. ✅ **Assuntos:** HTML + Seletor confirmado
+3. ✅ **Nichos:** HTML + Seletor confirmado
+4. ✅ **Views (30d):** HTML + Seletor confirmado
+5. ✅ **Receita (30d):** HTML + Seletor confirmado
+
+---
+
+**Status:** 🎉 **100% MAPEADO - PRONTO PARA IMPLEMENTAÇÃO!**
+
+**Próximo Move:** Aguardando confirmação do usuário para:
+1. Fazer `git add` e `git commit` dessas mudanças
+2. Começar a codificar o método `scrape_channel_details()` em `app/services/tubehunt.py`

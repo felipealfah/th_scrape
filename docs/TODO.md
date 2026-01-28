@@ -736,56 +736,123 @@ python3 test_scrape_url_feature.py
 - [ ] Error handling: credenciais inválidas (401)
 - [ ] Tests para login bem-sucedido e falhado
 
-### 4.3 - Schema para Dados de Canal Individual
-- [ ] Criar `ChannelDetailedData` schema com campos:
-  - [ ] `channel_link`: URL (str)
-  - [ ] `keywords`: lista de strings
-  - [ ] `subjects`: lista de strings
-  - [ ] `niches`: lista de strings
-  - [ ] `views_30_days`: string com número formatado
-  - [ ] `revenue_30_days`: string com valor formatado
-  - [ ] `additional_data`: dict para dados futuros
-- [ ] Adicionar validações Pydantic
-- [ ] Adicionar exemplos para Swagger
-- [ ] Criar `ScrapeChannelRequest` schema com:
-  - [ ] `session_id`: UUID string
-  - [ ] `channel_link`: URL completa
-  - [ ] `webhook_url`: opcional
+### 4.3 - Schema para Dados de Canal Individual ✅ (Seletores Confirmados)
+- [ ] Criar `ChannelDetailedData` schema (response) em `app/schemas/tubehunt.py`:
+  ```python
+  class ChannelDetailedData(BaseModel):
+      channel_link: str  # URL do canal extraída da requisição
+      keywords: List[str]  # Exemplo: ["cruceros 2025", "viajar en crucero", ...]
+      subjects: List[str]  # Exemplo: ["Tourism", "Food", "Lifestyle (sociology)", "Society"]
+      niches: List[str]  # Exemplo: ["Cruzeiros"]
+      views_30_days: str  # Exemplo: "357.96k" ou "1500" ou "1.5M"
+      revenue_30_days: str  # Exemplo: "$239,00 - $781,00" ou "$100 - $500"
+  ```
+  - [ ] `channel_link`: URL (str) - obrigatório
+  - [ ] `keywords`: List[str] - obrigatório (pode ser lista vazia)
+  - [ ] `subjects`: List[str] - obrigatório (pode ser lista vazia)
+  - [ ] `niches`: List[str] - obrigatório (pode ser lista vazia)
+  - [ ] `views_30_days`: str - obrigatório (pode ser None se não encontrar)
+  - [ ] `revenue_30_days`: str - obrigatório (pode ser None se não encontrar)
 
-### 4.4 - Método de Scraping de Canal Individual
+- [ ] Adicionar validações Pydantic:
+  - [ ] channel_link: validar que é URL válida (usando validator ou Field(..., url=True))
+  - [ ] keywords: min_items=0 (lista pode ser vazia)
+  - [ ] subjects: min_items=0 (lista pode ser vazia)
+  - [ ] niches: min_items=0 (lista pode ser vazia)
+
+- [ ] Adicionar exemplos para Swagger:
+  ```python
+  model_config = ConfigDict(
+      json_schema_extra={
+          "example": {
+              "channel_link": "https://app.tubehunt.io/channel/UCEvkNQR22vQYzp2hil_Z9kA",
+              "keywords": ["cruceros 2025", "viajar en crucero", "consejos para cruceros"],
+              "subjects": ["Tourism", "Food", "Lifestyle (sociology)"],
+              "niches": ["Cruzeiros"],
+              "views_30_days": "357.96k",
+              "revenue_30_days": "$239,00 - $781,00"
+          }
+      }
+  )
+  ```
+
+- [ ] Criar `ScrapeChannelRequest` schema (request):
+  - [ ] `session_id`: str (UUID format) - obrigatório
+  - [ ] `channel_link`: str (URL completa) - obrigatório
+  - [ ] `webhook_url`: str (URL do webhook) - opcional
+  - [ ] Validações: session_id deve ser UUID válido, channel_link deve ser URL válida
+
+- [ ] Reutilizar schemas existentes:
+  - [ ] JobStartResponse (já existe) para resposta imediata do endpoint
+  - [ ] JobResultResponse (já existe) para resultado quando completa
+
+### 4.4 - Método de Scraping de Canal Individual ✅ (Seletores Confirmados)
 - [ ] Criar método `scrape_channel_details()` em TubeHuntService
 - [ ] Aceita page (Playwright Page object) e channel_link
 - [ ] **Etapa 1: Navegação**
   - [ ] Navegar para channel_link
   - [ ] Aguardar página carregar (wait_for_load_state("networkidle"))
   - [ ] Verificar se estamos na URL correta
-- [ ] **Etapa 2: Extração de Keywords** (seletores a confirmar)
-  - [ ] Encontrar elemento com seletor CSS/XPath
-  - [ ] Extrair texto e fazer parse em lista
-  - [ ] Tratar casos vazios
-- [ ] **Etapa 3: Extração de Subjects** (seletores a confirmar)
-  - [ ] Encontrar elemento com seletor CSS/XPath
-  - [ ] Extrair texto e fazer parse em lista
-  - [ ] Tratar casos vazios
-- [ ] **Etapa 4: Extração de Nichos** (seletores a confirmar)
-  - [ ] Encontrar elemento com seletor CSS/XPath
-  - [ ] Extrair texto e fazer parse em lista
-  - [ ] Tratar casos vazios
-- [ ] **Etapa 5: Extração de Views (30 dias)** (seletores a confirmar)
-  - [ ] Encontrar elemento com seletor CSS/XPath
-  - [ ] Extrair e validar formato (número/string)
-- [ ] **Etapa 6: Extração de Receita (30 dias)** (seletores a confirmar)
-  - [ ] Encontrar elemento com seletor CSS/XPath
-  - [ ] Extrair e validar formato (valor monetário/string)
+
+- [ ] **Etapa 2: Extração de Keywords** ✅
+  - [ ] XPath: `//p[contains(., 'Keywords')]/following-sibling::span[@class='badge badge-soft rounded-pill']`
+  - [ ] Usar page.query_selector_all() com XPath
+  - [ ] Para cada elemento, extrair inner_text() e fazer strip()
+  - [ ] Retornar lista de strings: `["palavra-chave-1", "palavra-chave-2", ...]`
+  - [ ] Tratar casos vazios (retornar lista vazia)
+
+- [ ] **Etapa 3: Extração de Subjects (Assuntos)** ✅
+  - [ ] XPath: `//p[contains(., 'Assuntos')]/following-sibling::span[@class='badge badge-soft rounded-pill']`
+  - [ ] Usar page.query_selector_all() com XPath
+  - [ ] Para cada elemento, extrair inner_text() e fazer strip()
+  - [ ] Retornar lista de strings: `["Tourism", "Food", "Lifestyle (sociology)", ...]`
+  - [ ] Tratar casos vazios (retornar lista vazia)
+
+- [ ] **Etapa 4: Extração de Nichos** ✅
+  - [ ] XPath: `//p[contains(., 'Nicho')]/following-sibling::span[@class='badge badge-soft rounded-pill']//a`
+  - [ ] **Diferença importante:** Texto está dentro de `<a>` tag (não direto no span)
+  - [ ] Usar page.query_selector_all() com XPath
+  - [ ] Para cada `<a>` element, extrair inner_text() e fazer strip()
+  - [ ] Retornar lista de strings: `["Cruzeiros", "Viajería", ...]`
+  - [ ] Tratar casos vazios (retornar lista vazia)
+
+- [ ] **Etapa 5: Extração de Views (30 dias)** ✅
+  - [ ] XPath: `//div[@class='label' and contains(., 'Views (30 dias)')]/following-sibling::div[@class='value']`
+  - [ ] Usar page.query_selector() (um único elemento)
+  - [ ] Extrair inner_text() e fazer strip()
+  - [ ] Retornar string formatada: `"357.96k"` ou `"15000"` ou `"1.5M"`
+  - [ ] Se não encontrar, retornar None ou string vazia
+
+- [ ] **Etapa 6: Extração de Receita (30 dias)** ✅
+  - [ ] XPath: `//div[@class='label' and contains(., 'Receita (30 dias)')]/following-sibling::div[@class='value']`
+  - [ ] Usar page.query_selector() (um único elemento)
+  - [ ] Extrair inner_text() e fazer strip()
+  - [ ] Retornar string formatada: `"$239,00 - $781,00"` ou `"$100 - $500"`
+  - [ ] Se não encontrar, retornar None ou string vazia
+
 - [ ] **Tratamento de Erros**
-  - [ ] Timeout de navegação
-  - [ ] Elemento não encontrado
-  - [ ] Página não carregou
-  - [ ] Retornar erro descritivo
+  - [ ] Timeout de navegação (esperado: ~10s para carregar página)
+  - [ ] Elemento não encontrado (retornar None/lista vazia, não falhar)
+  - [ ] Página não carregou completamente (retry ou erro)
+  - [ ] Retornar erro descritivo com mensagem clara
+
 - [ ] **Logging**
-  - [ ] Log de cada etapa de extração
-  - [ ] Log de tempo total
+  - [ ] Log inicial: "Iniciando scraping do canal: {channel_link}"
+  - [ ] Log para cada etapa: "Extraindo keywords..." etc
+  - [ ] Log final: "Scraping concluído em {time}s"
+  - [ ] Log de erros com stack trace (apenas interno, não ao webhook)
+
+- [ ] **Retorno/Schema**
+  - [ ] Retornar ChannelDetailedData estruturado com todos os 5 campos
+  - [ ] Exemplo: `{"channel_link": "...", "keywords": [...], "subjects": [...], "niches": [...], "views_30_days": "...", "revenue_30_days": "..."}`
+
 - [ ] Tests para cada campo individual
+  - [ ] Test: extração de keywords com múltiplos valores
+  - [ ] Test: extração de subjects com múltiplos valores
+  - [ ] Test: extração de nichos (com links)
+  - [ ] Test: extração de views formatado corretamente
+  - [ ] Test: extração de receita formatado corretamente
+  - [ ] Test: tratamento de elementos vazios/não encontrados
 
 ### 4.5 - Endpoint POST /api/v1/tubehunt/scrape-channel
 - [ ] Criar endpoint em `app/api/v1/tubehunt.py`
@@ -885,9 +952,45 @@ python3 test_scrape_url_feature.py
 
 ---
 
-**Última Atualização:** 2026-01-23
-**Próxima Revisão:** 2026-01-25
-**Status:** ⏳ FASE 4 PLANEJADA (Aguardando seletores HTML)
+---
+
+## Definição de Conclusão - Fase 4 (Planejamento + Seletores Confirmados) ✅
+
+Fase 4 está em estado de **PRONTO PARA IMPLEMENTAÇÃO**:
+
+### Documentação Completa ✅
+- [x] PLAN.md atualizado com arquitetura completa da Fase 4
+- [x] CHANNEL_SCRAPING_SELECTORS.md criado com 5 seletores HTML 100% mapeados
+- [x] TODO.md atualizado com todas as tarefas específicas
+- [x] Todos os XPath e seletores CSS documentados com exemplos
+
+### Seletores HTML Confirmados ✅
+- [x] Keywords: XPath confirmado e testado no HTML real
+- [x] Subjects (Assuntos): XPath confirmado e testado no HTML real
+- [x] Niches (Nichos): XPath confirmado e testado (com `<a>` tags)
+- [x] Views (30 dias): XPath confirmado e testado (structure .metric/.value)
+- [x] Revenue (30 dias): XPath confirmado e testado (structure .metric/.value)
+
+### Pronto para Começar ✅
+- [x] Todos os seletores documentados no CHANNEL_SCRAPING_SELECTORS.md
+- [x] Estratégias de extração Python/Playwright escritas
+- [x] Exemplos de output esperado para cada campo
+- [x] TODO.md com tasks específicas para implementação
+
+### Próximas Tarefas (Em Ordem)
+1. **Criar ChannelDetailedData schema** (app/schemas/tubehunt.py)
+2. **Criar ScrapeChannelRequest schema** (app/schemas/tubehunt.py)
+3. **Criar SessionManager** (app/core/session_manager.py)
+4. **Criar método scrape_channel_details()** em TubeHuntService (app/services/tubehunt.py)
+5. **Criar endpoints** POST /login, POST /scrape-channel, GET /result/{job_id}, DELETE /sessions/{id}
+6. **Testes** para cada componente
+7. **Testes integrados** com 1200 canais local e 50 canais via API
+
+---
+
+**Última Atualização:** 2026-01-23 ✅ (Seletores HTML Confirmados)
+**Próxima Revisão:** 2026-01-24 (após implementação)
+**Status:** ✅ FASE 4 PRONTA PARA IMPLEMENTAÇÃO (Todos seletores mapeados)
 **Responsável:** Felipe Full
 **Branch Atual:** main
-**Branch Próxima:** feature/session-based-channel-scraping
+**Branch Próxima:** feature/session-based-channel-scraping (quando implementar)

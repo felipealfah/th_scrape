@@ -442,3 +442,94 @@ class WebhookPayload(BaseModel):
                 "timestamp": "2026-01-01T20:15:31.000000"
             }
         }
+
+
+# ============================================================================
+# FASE 4: Scraping de Canais Individuais com Sessão Persistente
+# ============================================================================
+
+
+class LoginRequest(BaseModel):
+    """Request model para login com sessão persistente"""
+    username: Optional[str] = Field(None, description="Email/username (usa .env se não fornecido)")
+    password: Optional[str] = Field(None, description="Senha (usa .env se não fornecida)")
+
+    class Config:
+        json_schema_extra = {
+            "example": {
+                "username": "felipealfah@gmail.com",
+                "password": "Tub3h@17560919"
+            }
+        }
+
+
+class LoginResponse(BaseModel):
+    """Response model para login com sessão persistente"""
+    session_id: Optional[str] = Field(None, description="ID da sessão persistente (UUID)")
+    status: str = Field(..., description="Status do login: logged_in ou failed")
+    created_at: datetime = Field(default_factory=datetime.utcnow, description="Data/hora de criação da sessão")
+    expires_in: int = Field(default=1800, description="Tempo de expiração da sessão em segundos (30 min)")
+    message: str = Field(..., description="Mensagem descritiva do resultado")
+    error: Optional[str] = Field(None, description="Mensagem de erro se falhou")
+
+    class Config:
+        json_schema_extra = {
+            "example": {
+                "session_id": "550e8400-e29b-41d4-a716-446655440000",
+                "status": "logged_in",
+                "created_at": "2026-01-23T15:30:00Z",
+                "expires_in": 1800,
+                "message": "Login realizado com sucesso",
+                "error": None
+            }
+        }
+
+
+class ChannelDetailedData(BaseModel):
+    """Schema com dados detalhados extraídos de um canal individual"""
+    channel_link: str = Field(..., description="URL completa do canal")
+    keywords: list[str] = Field(default_factory=list, description="Lista de keywords do canal")
+    subjects: list[str] = Field(default_factory=list, description="Lista de assuntos identificados")
+    niches: list[str] = Field(default_factory=list, description="Lista de nichos/categorias")
+    views_30_days: Optional[str] = Field(None, description="Visualizações dos últimos 30 dias (ex: 357.96k)")
+    revenue_30_days: Optional[str] = Field(None, description="Estimativa de receita dos últimos 30 dias (ex: $239,00 - $781,00)")
+
+    class Config:
+        json_schema_extra = {
+            "example": {
+                "channel_link": "https://app.tubehunt.io/channel/UCEvkNQR22vQYzp2hil_Z9kA",
+                "keywords": [
+                    "cruceros 2025",
+                    "viajar en crucero",
+                    "consejos para cruceros",
+                    "mejores cruceros del mundo"
+                ],
+                "subjects": [
+                    "Tourism",
+                    "Food",
+                    "Lifestyle (sociology)",
+                    "Society"
+                ],
+                "niches": [
+                    "Cruzeiros"
+                ],
+                "views_30_days": "357.96k",
+                "revenue_30_days": "$239,00 - $781,00"
+            }
+        }
+
+
+class ScrapeChannelRequest(BaseModel):
+    """Request model para scraping de canal individual"""
+    session_id: str = Field(..., description="ID da sessão (obtido em POST /login)")
+    channel_link: str = Field(..., description="URL completa do canal (ex: https://app.tubehunt.io/channel/UC...)")
+    webhook_url: Optional[str] = Field(None, description="URL do webhook para notificação de conclusão")
+
+    class Config:
+        json_schema_extra = {
+            "example": {
+                "session_id": "550e8400-e29b-41d4-a716-446655440000",
+                "channel_link": "https://app.tubehunt.io/channel/UCEvkNQR22vQYzp2hil_Z9kA",
+                "webhook_url": "https://seu-webhook.com/resultado"
+            }
+        }

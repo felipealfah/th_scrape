@@ -7,12 +7,17 @@ from app.schemas.tubehunt import (
     ChannelsListResponse,
     HealthCheckResponse,
     ScrapeChannelsRequest,
+    LoginRequest,
+    LoginResponse,
+    ChannelDetailedData,
+    ScrapeChannelRequest,
 )
 from app.services.tubehunt import TubeHuntService
 from app.core.config import settings
 import logging
 import time
 import asyncio
+import threading
 from datetime import datetime
 from urllib.parse import urlparse
 
@@ -21,6 +26,9 @@ router = APIRouter(prefix="/tubehunt", tags=["tubehunt"])
 
 # Tracking startup time for uptime calculation
 _startup_time = time.time()
+
+
+
 
 
 @router.post("/login-and-scrape", response_model=TubeHuntLoginResponse)
@@ -391,24 +399,13 @@ async def scrape_channels_simplified(request: ScrapeChannelsRequest = None) -> C
         )
 
 
-# DEPRECATED: Endpoints de job queue removidos
-# Use POST /scrape-channels para scraping direto (sem job queue)
-#
-# @router.get("/scrape-channels/result/{job_id}")
-# async def get_scrape_result(job_id: str):
-#     """
-#     DEPRECATED: Use POST /scrape-channels em vez disso
-#     Consultar resultado de um job de scraping
-#     """
-
 # ============================================================================
-# Job Queue + Webhook Endpoints - Fase 2.1
+# Job Queue + Webhook Endpoints - Backwards Compatibility
 # ============================================================================
 
 from app.core.job_queue import job_manager
 from app.schemas.tubehunt import JobStartResponse, JobStatusResponse, JobResultResponse, JobErrorResponse
 from typing import Optional
-import threading
 
 
 @router.post("/scrape-channels/start", response_model=JobStartResponse)
@@ -664,4 +661,297 @@ async def get_scrape_result(job_id: str):
         raise HTTPException(
             status_code=500,
             detail=f"Erro ao consultar status do job: {str(e)}"
+        )
+
+
+# ============================================================================
+# Phase 4: Session-based Channel Scraping with Persistent Browser
+# ============================================================================
+
+from app.core.session_manager import session_manager
+
+
+@router.post("/login", response_model=LoginResponse)
+async def login_with_session(request: LoginRequest) -> LoginResponse:
+    """
+    Criar sessão persistente com browser autenticado
+
+    ## Descrição
+    Faz login no TubeHunt e retorna um session_id para uso em requisições subsequentes.
+    O browser permanece aberto em memória durante 30 minutos.
+
+    ## Parâmetros
+    - **username**: Email/username (usa .env se não fornecido)
+    - **password**: Senha (usa .env se não fornecido)
+
+    ## Exemplo de uso
+    ```bash
+    curl -X POST http://localhost:8000/api/v1/tubehunt/login \\
+      -H "Content-Type: application/json" \\
+      -d '{
+        "username": "seu@email.com",
+        "password": "sua_senha"
+      }'
+    ```
+
+    ## Resposta bem-sucedida
+    ```json
+    {
+      "session_id": "550e8400-e29b-41d4-a716-446655440000",
+      "status": "logged_in",
+      "created_at": "2026-01-01T20:00:00.000000",
+      "expires_in": 1800,
+      "message": "✅ Sessão criada e login realizado com sucesso",
+      "error": null
+    }
+    ```
+    """
+    try:
+        # Usar credenciais fornecidas ou fallback para .env
+        username = request.username or settings.user
+        password = request.password or settings.password
+
+        if not username or not password:
+            return LoginResponse(
+                session_id=None,
+                status="failed",
+                message="Credenciais não fornecidas",
+                error="Username ou password não configurados"
+            )
+
+        logger.info(f"Iniciando login para sessão persistente (usuário: {username[:20]}...)")
+
+        # Executar login em thread separada
+        def login_sync():
+            service = TubeHuntService()
+            service._create_driver()
+            try:
+                # Fazer login
+                service.username = username
+                service.password = password
+                service._access_login_page()
+                service._fill_credentials()
+                service._submit_form()
+                service._wait_for_redirect()
+
+                logger.info("✅ Login realizado com sucesso")
+
+                # Obter página logada
+                page = service.get_page()
+                browser_manager = service.browser_manager
+
+                # Criar sessão persistente (passando browser_manager para manter vivo)
+                session_id = session_manager.create_session(page, username, browser_manager)
+
+                logger.info(f"✅ Sessão criada: {session_id}")
+
+                return {
+                    "success": True,
+                    "session_id": session_id,
+                    "status": "logged_in",
+                    "message": "✅ Sessão criada e login realizado com sucesso"
+                }
+
+            except Exception as e:
+                logger.error(f"❌ Erro no login: {str(e)}", exc_info=True)
+                if service:
+                    service.close()
+                return {
+                    "success": False,
+                    "session_id": None,
+                    "status": "failed",
+                    "error": str(e),
+                    "message": f"❌ Erro ao fazer login: {str(e)}"
+                }
+
+        # Usar run_in_executor ao invés de to_thread para evitar erro com Playwright Sync API
+        loop = asyncio.get_event_loop()
+        result = await loop.run_in_executor(None, login_sync)
+
+        if result["success"]:
+            return LoginResponse(
+                session_id=result["session_id"],
+                status=result["status"],
+                message=result["message"],
+                error=None
+            )
+        else:
+            return LoginResponse(
+                session_id=None,
+                status=result["status"],
+                message=result["message"],
+                error=result.get("error")
+            )
+
+    except Exception as e:
+        logger.error(f"❌ Erro no endpoint /login: {str(e)}", exc_info=True)
+        return LoginResponse(
+            session_id=None,
+            status="failed",
+            message=f"❌ Erro ao criar sessão: {str(e)}",
+            error=str(e)
+        )
+
+
+@router.post("/scrape-channel", response_model=ChannelDetailedData)
+async def scrape_single_channel(request: ScrapeChannelRequest) -> ChannelDetailedData:
+    """
+    Scraping de um canal individual usando sessão persistente
+
+    ## Descrição
+    Usa uma sessão persistente (obtida via POST /login) para scraping de um canal individual.
+    Executa sincronamente e retorna os dados extraídos diretamente.
+    Extrai 6 campos: keywords, subjects, niches, views_30_days, revenue_30_days.
+
+    ## Parâmetros
+    - **session_id**: ID da sessão (obtido em POST /login)
+    - **channel_link**: URL completa do canal (ex: https://app.tubehunt.io/channel/UCEvkNQR22vQYzp2hil_Z9kA)
+
+    ## Exemplo de uso
+    ```bash
+    curl -X POST http://localhost:8000/api/v1/tubehunt/scrape-channel \\
+      -H "Content-Type: application/json" \\
+      -d '{
+        "session_id": "550e8400-e29b-41d4-a716-446655440000",
+        "channel_link": "https://app.tubehunt.io/channel/UCEvkNQR22vQYzp2hil_Z9kA"
+      }'
+    ```
+
+    ## Resposta bem-sucedida
+    ```json
+    {
+      "channel_link": "https://app.tubehunt.io/channel/UCEvkNQR22vQYzp2hil_Z9kA",
+      "keywords": ["cruceros 2025", "viajar en crucero"],
+      "subjects": ["Tourism", "Food"],
+      "niches": ["Cruzeiros"],
+      "views_30_days": "357.96k",
+      "revenue_30_days": "$239,00 - $781,00"
+    }
+    ```
+    """
+    try:
+        # Validar session_id
+        session = session_manager.get_session(request.session_id)
+        if not session:
+            raise HTTPException(
+                status_code=401,
+                detail=f"Sessão inválida ou expirada: {request.session_id}"
+            )
+
+        logger.info(f"✅ Sessão válida encontrada: {request.session_id}")
+        logger.info(f"🔍 Scrapeando canal: {request.channel_link}")
+
+        # Executar scraping na sessão existente (não cria novo browser)
+        def scrape_sync():
+            service = None
+            try:
+                # Use the session's page directly - no need to create a new browser
+                page = session.page
+
+                logger.info(f"📍 Usando browser da sessão para scraping")
+
+                # Create a minimal service wrapper just for the scrape_channel_details method
+                service = TubeHuntService()
+                service.page = page
+                service.browser_manager = session.browser_manager
+
+                # Scrape the channel
+                logger.info(f"🔍 Extraindo dados do canal...")
+                channel_data = service.scrape_channel_details(page, request.channel_link)
+
+                if not channel_data:
+                    raise Exception("Falha ao extrair dados do canal")
+
+                logger.info(f"✅ Scrapeado com sucesso!")
+                return channel_data
+
+            except Exception as e:
+                logger.error(f"❌ Erro no scraping: {str(e)}", exc_info=True)
+                raise
+
+        # Executar no executor para não bloquear event loop
+        loop = asyncio.get_event_loop()
+        channel_data = await loop.run_in_executor(None, scrape_sync)
+
+        return ChannelDetailedData(
+            channel_link=channel_data.channel_link,
+            keywords=channel_data.keywords,
+            subjects=channel_data.subjects,
+            niches=channel_data.niches,
+            views_30_days=channel_data.views_30_days,
+            revenue_30_days=channel_data.revenue_30_days
+        )
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"❌ Erro ao fazer scraping de canal: {str(e)}", exc_info=True)
+        raise HTTPException(
+            status_code=500,
+            detail=f"Erro ao scraping de canal: {str(e)}"
+        )
+
+
+@router.delete("/sessions/{session_id}")
+async def close_session(session_id: str):
+    """
+    Fechar sessão persistente e liberar recursos
+
+    ## Descrição
+    Fecha o browser da sessão especificada e remove da memória.
+    Libera recursos e invalida o session_id para novas requisições.
+
+    ## Parâmetros
+    - **session_id**: ID da sessão (UUID obtido em POST /login)
+
+    ## Exemplo de uso
+    ```bash
+    curl -X DELETE http://localhost:8000/api/v1/tubehunt/sessions/550e8400-e29b-41d4-a716-446655440000
+    ```
+
+    ## Resposta bem-sucedida
+    ```json
+    {
+      "success": true,
+      "message": "✅ Sessão fechada com sucesso",
+      "session_id": "550e8400-e29b-41d4-a716-446655440000"
+    }
+    ```
+
+    ## Resposta quando não encontrada
+    ```json
+    {
+      "success": false,
+      "message": "❌ Sessão não encontrada",
+      "session_id": "550e8400-e29b-41d4-a716-446655440000"
+    }
+    ```
+    """
+    try:
+        logger.info(f"Encerrando sessão: {session_id}")
+
+        # Usar executor para fechar sessão (evita thread-binding do Playwright)
+        loop = asyncio.get_event_loop()
+        result = await loop.run_in_executor(None, session_manager.close_session, session_id)
+
+        if result:
+            logger.info(f"✅ Sessão encerrada: {session_id}")
+            return {
+                "success": True,
+                "message": "✅ Sessão fechada com sucesso",
+                "session_id": session_id
+            }
+        else:
+            logger.warning(f"❌ Sessão não encontrada: {session_id}")
+            return {
+                "success": False,
+                "message": "❌ Sessão não encontrada",
+                "session_id": session_id
+            }
+
+    except Exception as e:
+        logger.error(f"❌ Erro ao fechar sessão: {str(e)}", exc_info=True)
+        raise HTTPException(
+            status_code=500,
+            detail=f"Erro ao fechar sessão: {str(e)}"
         )

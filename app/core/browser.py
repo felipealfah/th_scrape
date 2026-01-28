@@ -4,9 +4,29 @@ Gerenciador de navegador Playwright com suporte a context manager.
 
 import logging
 from typing import Optional
-from playwright.sync_api import sync_playwright, Browser, BrowserContext, Page
+from playwright.sync_api import sync_playwright, Browser, BrowserContext, Page, Playwright
+import threading
 
 logger = logging.getLogger(__name__)
+
+# Use threading.local() to store one Playwright instance per thread
+# This avoids greenlet thread-binding errors when using Playwright sync API
+# across multiple executor threads
+_thread_local = threading.local()
+
+def _get_or_create_playwright() -> Playwright:
+    """
+    Obter ou criar instância Playwright por thread.
+
+    Playwright sync API usa greenlets que são bound a threads.
+    Usar uma instância por thread evita erros de greenlet.
+    """
+    if not hasattr(_thread_local, 'playwright_instance') or _thread_local.playwright_instance is None:
+        logger.info(f"Criando instância Playwright para thread: {threading.current_thread().name}")
+        _thread_local.playwright_instance = sync_playwright().start()
+        logger.info(f"✅ Instância Playwright criada para thread: {threading.current_thread().name}")
+
+    return _thread_local.playwright_instance
 
 
 class PlaywrightBrowserManager:
@@ -55,9 +75,10 @@ class PlaywrightBrowserManager:
             Exception: Se falhar ao conectar ao navegador
         """
         try:
-            # Inicializar Playwright
-            self.playwright = sync_playwright().start()
-            logger.info("✅ Playwright iniciado")
+            # Obter instância singleton do Playwright
+            # (criada no tempo de carregamento do módulo, antes do event loop async)
+            self.playwright = _get_or_create_playwright()
+            logger.info("✅ Usando instância singleton do Playwright")
 
             # Selecionar tipo de navegador
             if self.browser_type == "chromium":
@@ -92,7 +113,9 @@ class PlaywrightBrowserManager:
         """
         Fechar navegador e limpar recursos.
 
-        Fecha página, contexto, navegador e Playwright em ordem.
+        Fecha página, contexto e navegador.
+        A instância Playwright (thread-local) permanece ativa para outras
+        instâncias de PlaywrightBrowserManager na mesma thread.
         """
         try:
             if self.page:
@@ -110,10 +133,10 @@ class PlaywrightBrowserManager:
                 self.browser = None
                 logger.info("✅ Navegador fechado")
 
-            if self.playwright:
-                self.playwright.stop()
-                self.playwright = None
-                logger.info("✅ Playwright parado")
+            # Não fechamos self.playwright pois é compartilhada entre
+            # múltiplas instâncias de PlaywrightBrowserManager na mesma thread.
+            # Será limpa quando a thread terminar.
+            self.playwright = None
 
         except Exception as e:
             logger.error(f"❌ Erro ao fechar navegador: {str(e)}")

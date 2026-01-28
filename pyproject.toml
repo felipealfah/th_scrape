@@ -13,4 +13,5 @@ dependencies = [
     "python-dotenv>=1.0.0",
     "httpx>=0.25.2",
     "requests>=2.31.0",
+    "pandas>=2.3.3",
 ]
