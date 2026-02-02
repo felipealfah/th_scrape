@@ -11,8 +11,10 @@ from app.schemas.tubehunt import (
     LoginResponse,
     ChannelDetailedData,
     ScrapeChannelRequest,
+    ScrapeChannelsListResponse,
 )
 from app.services.tubehunt import TubeHuntService
+from app.services.webhook import webhook_caller
 from app.core.config import settings
 import logging
 import time
@@ -793,31 +795,52 @@ async def login_with_session(request: LoginRequest) -> LoginResponse:
         )
 
 
-@router.post("/scrape-channel", response_model=ChannelDetailedData)
-async def scrape_single_channel(request: ScrapeChannelRequest) -> ChannelDetailedData:
+@router.post("/scrape-channel/{session_id}")
+async def scrape_channel(session_id: str, request: ScrapeChannelRequest):
     """
-    Scraping de um canal individual usando sessão persistente
+    Scraping de um ou múltiplos canais usando sessão persistente
 
     ## Descrição
-    Usa uma sessão persistente (obtida via POST /login) para scraping de um canal individual.
-    Executa sincronamente e retorna os dados extraídos diretamente.
+    Usa uma sessão persistente (obtida via POST /login) para scraping de canal(is).
+    - Se fornecer **channel_link**: retorna dados de um canal
+    - Se fornecer **channel_links**: retorna lista de canais
+
     Extrai 6 campos: keywords, subjects, niches, views_30_days, revenue_30_days.
 
     ## Parâmetros
     - **session_id**: ID da sessão (obtido em POST /login)
-    - **channel_link**: URL completa do canal (ex: https://app.tubehunt.io/channel/UCEvkNQR22vQYzp2hil_Z9kA)
+    - **channel_link**: URL de um canal (mutuamente exclusivo com channel_links)
+    - **channel_links**: Lista de URLs de canais (mutuamente exclusivo com channel_link)
+    - **webhook_url** (opcional): URL do webhook para notificação ao final do scraping
 
-    ## Exemplo de uso
+    ## Exemplos de uso
+
+    ### Um canal
     ```bash
-    curl -X POST http://localhost:8000/api/v1/tubehunt/scrape-channel \\
+    curl -X POST http://localhost:8000/api/v1/tubehunt/scrape-channel/550e8400-e29b-41d4-a716-446655440000 \\
       -H "Content-Type: application/json" \\
       -d '{
-        "session_id": "550e8400-e29b-41d4-a716-446655440000",
-        "channel_link": "https://app.tubehunt.io/channel/UCEvkNQR22vQYzp2hil_Z9kA"
+        "channel_link": "https://app.tubehunt.io/channel/UCEvkNQR22vQYzp2hil_Z9kA",
+        "webhook_url": "https://webhook.site/unique-id"
       }'
     ```
 
-    ## Resposta bem-sucedida
+    ### Múltiplos canais
+    ```bash
+    curl -X POST http://localhost:8000/api/v1/tubehunt/scrape-channel/550e8400-e29b-41d4-a716-446655440000 \\
+      -H "Content-Type: application/json" \\
+      -d '{
+        "channel_links": [
+          "https://app.tubehunt.io/channel/UCEvkNQR22vQYzp2hil_Z9kA",
+          "https://app.tubehunt.io/channel/UC_x5XG1OV2P6uZZ5FSM9Ttw"
+        ],
+        "webhook_url": "https://webhook.site/unique-id"
+      }'
+    ```
+
+    ## Respostas
+
+    ### Um canal
     ```json
     {
       "channel_link": "https://app.tubehunt.io/channel/UCEvkNQR22vQYzp2hil_Z9kA",
@@ -828,67 +851,172 @@ async def scrape_single_channel(request: ScrapeChannelRequest) -> ChannelDetaile
       "revenue_30_days": "$239,00 - $781,00"
     }
     ```
+
+    ### Múltiplos canais
+    ```json
+    {
+      "total_scraped": 2,
+      "total_requested": 2,
+      "channels": [...],
+      "failed_channels": []
+    }
+    ```
     """
+    start_time = time.time()
+
     try:
+        # Validar inputs
+        request.validate_inputs()
+
         # Validar session_id
-        session = session_manager.get_session(request.session_id)
+        session = session_manager.get_session(session_id)
         if not session:
             raise HTTPException(
                 status_code=401,
-                detail=f"Sessão inválida ou expirada: {request.session_id}"
+                detail=f"Sessão inválida ou expirada: {session_id}"
             )
 
-        logger.info(f"✅ Sessão válida encontrada: {request.session_id}")
-        logger.info(f"🔍 Scrapeando canal: {request.channel_link}")
+        logger.info(f"✅ Sessão válida encontrada: {session_id}")
 
-        # Executar scraping na sessão existente (não cria novo browser)
-        def scrape_sync():
-            service = None
-            try:
-                # Use the session's page directly - no need to create a new browser
-                page = session.page
+        # Detectar se é um canal ou lista
+        if request.channel_link:
+            # ===== MODO: UM CANAL =====
+            logger.info(f"🔍 Scrapeando um canal: {request.channel_link}")
 
-                logger.info(f"📍 Usando browser da sessão para scraping")
+            def scrape_single():
+                try:
+                    page = session.page
+                    service = TubeHuntService()
+                    service.page = page
+                    service.browser_manager = session.browser_manager
 
-                # Create a minimal service wrapper just for the scrape_channel_details method
-                service = TubeHuntService()
-                service.page = page
-                service.browser_manager = session.browser_manager
+                    logger.info(f"📍 Extraindo dados do canal...")
+                    channel_data = service.scrape_channel_details(page, request.channel_link)
 
-                # Scrape the channel
-                logger.info(f"🔍 Extraindo dados do canal...")
-                channel_data = service.scrape_channel_details(page, request.channel_link)
+                    if not channel_data:
+                        raise Exception("Falha ao extrair dados do canal")
 
-                if not channel_data:
-                    raise Exception("Falha ao extrair dados do canal")
+                    logger.info(f"✅ Scrapeado com sucesso!")
+                    return channel_data
 
-                logger.info(f"✅ Scrapeado com sucesso!")
-                return channel_data
+                except Exception as e:
+                    logger.error(f"❌ Erro no scraping: {str(e)}", exc_info=True)
+                    raise
 
-            except Exception as e:
-                logger.error(f"❌ Erro no scraping: {str(e)}", exc_info=True)
-                raise
+            # Executar no executor
+            loop = asyncio.get_event_loop()
+            channel_data = await loop.run_in_executor(None, scrape_single)
 
-        # Executar no executor para não bloquear event loop
-        loop = asyncio.get_event_loop()
-        channel_data = await loop.run_in_executor(None, scrape_sync)
+            execution_time = time.time() - start_time
 
-        return ChannelDetailedData(
-            channel_link=channel_data.channel_link,
-            keywords=channel_data.keywords,
-            subjects=channel_data.subjects,
-            niches=channel_data.niches,
-            views_30_days=channel_data.views_30_days,
-            revenue_30_days=channel_data.revenue_30_days
+            # Preparar resposta
+            response_data = ChannelDetailedData(
+                channel_link=channel_data.channel_link,
+                keywords=channel_data.keywords,
+                subjects=channel_data.subjects,
+                niches=channel_data.niches,
+                views_30_days=channel_data.views_30_days,
+                revenue_30_days=channel_data.revenue_30_days
+            )
+
+            # Enviar webhook se URL foi fornecida
+            if request.webhook_url:
+                logger.info(f"📤 Enviando webhook para {request.webhook_url}")
+                webhook_caller.send_webhook(
+                    webhook_url=request.webhook_url,
+                    job_id=session_id,
+                    status="completed",
+                    result=response_data.model_dump(),
+                    execution_time_seconds=execution_time
+                )
+
+            return response_data
+
+        else:
+            # ===== MODO: MÚLTIPLOS CANAIS =====
+            logger.info(f"🔍 Scrapeando {len(request.channel_links)} canais")
+
+            def scrape_batch():
+                channels_data = []
+                failed_channels = []
+
+                try:
+                    page = session.page
+                    service = TubeHuntService()
+                    service.page = page
+                    service.browser_manager = session.browser_manager
+
+                    # Scrape each channel sequentially
+                    for idx, channel_link in enumerate(request.channel_links, 1):
+                        try:
+                            logger.info(f"[{idx}/{len(request.channel_links)}] 🔍 Extraindo: {channel_link}")
+                            channel_data = service.scrape_channel_details(page, channel_link)
+
+                            if not channel_data:
+                                raise Exception("Falha ao extrair dados do canal")
+
+                            channels_data.append(channel_data)
+                            logger.info(f"[{idx}/{len(request.channel_links)}] ✅ Sucesso!")
+
+                        except Exception as e:
+                            logger.error(f"[{idx}/{len(request.channel_links)}] ❌ Erro: {str(e)}", exc_info=True)
+                            failed_channels.append({
+                                "channel_link": channel_link,
+                                "error": str(e)
+                            })
+                            continue
+
+                    return {
+                        "channels": channels_data,
+                        "failed_channels": failed_channels,
+                        "total_scraped": len(channels_data),
+                        "total_requested": len(request.channel_links)
+                    }
+
+                except Exception as e:
+                    logger.error(f"❌ Erro crítico: {str(e)}", exc_info=True)
+                    raise
+
+            # Executar no executor
+            loop = asyncio.get_event_loop()
+            batch_result = await loop.run_in_executor(None, scrape_batch)
+
+            execution_time = time.time() - start_time
+
+            # Preparar resposta
+            response_data = ScrapeChannelsListResponse(
+                total_scraped=batch_result["total_scraped"],
+                total_requested=batch_result["total_requested"],
+                channels=batch_result["channels"],
+                failed_channels=batch_result["failed_channels"]
+            )
+
+            # Enviar webhook se URL foi fornecida
+            if request.webhook_url:
+                logger.info(f"📤 Enviando webhook para {request.webhook_url}")
+                webhook_caller.send_webhook(
+                    webhook_url=request.webhook_url,
+                    job_id=session_id,
+                    status="completed",
+                    result=response_data.model_dump(),
+                    execution_time_seconds=execution_time
+                )
+
+            return response_data
+
+    except ValueError as e:
+        logger.error(f"❌ Erro de validação: {str(e)}")
+        raise HTTPException(
+            status_code=400,
+            detail=str(e)
         )
-
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"❌ Erro ao fazer scraping de canal: {str(e)}", exc_info=True)
+        logger.error(f"❌ Erro ao fazer scraping: {str(e)}", exc_info=True)
         raise HTTPException(
             status_code=500,
-            detail=f"Erro ao scraping de canal: {str(e)}"
+            detail=f"Erro ao scraping: {str(e)}"
         )
 
 

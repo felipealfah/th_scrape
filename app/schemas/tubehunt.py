@@ -520,16 +520,72 @@ class ChannelDetailedData(BaseModel):
 
 
 class ScrapeChannelRequest(BaseModel):
-    """Request model para scraping de canal individual"""
-    session_id: str = Field(..., description="ID da sessão (obtido em POST /login)")
-    channel_link: str = Field(..., description="URL completa do canal (ex: https://app.tubehunt.io/channel/UC...)")
-    webhook_url: Optional[str] = Field(None, description="URL do webhook para notificação de conclusão")
+    """Request model para scraping de canal(is) - individual ou múltiplos"""
+    channel_link: Optional[str] = Field(None, description="URL completa de um canal (ex: https://app.tubehunt.io/channel/UC...)")
+    channel_links: Optional[list[str]] = Field(None, description="Lista de URLs completas de canais")
+    webhook_url: Optional[str] = Field(None, description="URL do webhook para notificação ao terminar o scraping (opcional)")
+
+    class Config:
+        json_schema_extra = {
+            "examples": [
+                {
+                    "title": "Um canal",
+                    "value": {
+                        "channel_link": "https://app.tubehunt.io/channel/UCEvkNQR22vQYzp2hil_Z9kA"
+                    }
+                },
+                {
+                    "title": "Múltiplos canais",
+                    "value": {
+                        "channel_links": [
+                            "https://app.tubehunt.io/channel/UCEvkNQR22vQYzp2hil_Z9kA",
+                            "https://app.tubehunt.io/channel/UC_x5XG1OV2P6uZZ5FSM9Ttw"
+                        ]
+                    }
+                },
+                {
+                    "title": "Com webhook",
+                    "value": {
+                        "channel_links": [
+                            "https://app.tubehunt.io/channel/UCEvkNQR22vQYzp2hil_Z9kA"
+                        ],
+                        "webhook_url": "https://seu-webhook.com/resultado"
+                    }
+                }
+            ]
+        }
+
+    def validate_inputs(self):
+        """Validar que pelo menos um dos dois campos foi fornecido"""
+        if not self.channel_link and not self.channel_links:
+            raise ValueError("Forneça 'channel_link' para um canal ou 'channel_links' para múltiplos canais")
+        if self.channel_link and self.channel_links:
+            raise ValueError("Forneça apenas 'channel_link' OU 'channel_links', não ambos")
+        return True
+
+
+class ScrapeChannelsListResponse(BaseModel):
+    """Response model para scraping de múltiplos canais"""
+    total_scraped: int = Field(..., description="Número total de canais extraídos com sucesso")
+    total_requested: int = Field(..., description="Número total de canais solicitados")
+    channels: list[ChannelDetailedData] = Field(..., description="Lista de dados dos canais extraídos")
+    failed_channels: list[dict] = Field(default_factory=list, description="Lista de canais que falharam")
 
     class Config:
         json_schema_extra = {
             "example": {
-                "session_id": "550e8400-e29b-41d4-a716-446655440000",
-                "channel_link": "https://app.tubehunt.io/channel/UCEvkNQR22vQYzp2hil_Z9kA",
-                "webhook_url": "https://seu-webhook.com/resultado"
+                "total_scraped": 2,
+                "total_requested": 2,
+                "channels": [
+                    {
+                        "channel_link": "https://app.tubehunt.io/channel/UCEvkNQR22vQYzp2hil_Z9kA",
+                        "keywords": ["cruceros 2025", "viajar en crucero"],
+                        "subjects": ["Tourism", "Food"],
+                        "niches": ["Cruzeiros"],
+                        "views_30_days": "357.96k",
+                        "revenue_30_days": "$239,00 - $781,00"
+                    }
+                ],
+                "failed_channels": []
             }
         }
