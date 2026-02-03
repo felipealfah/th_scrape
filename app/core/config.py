@@ -22,6 +22,7 @@ class Settings(BaseSettings):
 
     # TubeHunt
     url_login: str = "https://app.tubehunt.io/login"
+    url_scrape_channels: str = "https://app.tubehunt.io/long/?page=1&OrderBy=DateDESC&ChangePerPage=50"
     user: str = ""
     password: str = ""
 
