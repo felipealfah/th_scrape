@@ -322,12 +322,14 @@ async def scrape_channels_simplified(request: ScrapeChannelsRequest = None) -> C
     ## Descrição
     Faz login e extrai lista completa de canais com todos os dados.
     Retorna resultado diretamente (síncrono, executado em thread separada).
+    Suporta webhook callback opcional.
 
     ## Parâmetros (todos opcionais, com fallback para .env)
     - `login_url`: URL de login (default: .env)
     - `username`: Email/usuário (default: .env)
     - `password`: Senha (default: .env)
     - `wait_time`: Timeout em segundos (5-300, default: 60)
+    - `webhook_url` (opcional): URL para notificação ao final do scraping
 
     ## Exemplo de uso
     ```bash
@@ -337,10 +339,13 @@ async def scrape_channels_simplified(request: ScrapeChannelsRequest = None) -> C
         "login_url": "https://app.tubehunt.io/login",
         "username": "seu@email.com",
         "password": "sua_senha",
-        "wait_time": 300
+        "wait_time": 60,
+        "webhook_url": "https://seu-webhook.com/callback"
       }'
     ```
     """
+    start_time = time.time()
+
     try:
         # Usar valores padrão da request ou fallback para .env
         if request is None:
@@ -350,6 +355,7 @@ async def scrape_channels_simplified(request: ScrapeChannelsRequest = None) -> C
         username = request.username or settings.user
         password = request.password or settings.password
         wait_time = request.wait_time
+        webhook_url = request.webhook_url
 
         # Validações
         if not username or not password:
@@ -367,6 +373,8 @@ async def scrape_channels_simplified(request: ScrapeChannelsRequest = None) -> C
         logger.info(f"Iniciando scraping de canais")
         logger.info(f"  - Usuario: {username}")
         logger.info(f"  - Wait Time: {wait_time}s")
+        if webhook_url:
+            logger.info(f"  - Webhook: {webhook_url}")
 
         # Executar scraping em thread separada (Playwright Sync não funciona em async context)
         def scrape_sync():
@@ -381,15 +389,31 @@ async def scrape_channels_simplified(request: ScrapeChannelsRequest = None) -> C
         # Executar em thread para não bloquear event loop
         result = await asyncio.to_thread(scrape_sync)
 
+        execution_time = time.time() - start_time
+
         logger.info(f"✅ Scraping completo: {result.get('total_channels', 0)} canais extraídos")
 
-        return ChannelsListResponse(
+        # Preparar resposta
+        response_data = ChannelsListResponse(
             success=result["success"],
             channels=result.get("channels", []),
             total_channels=result.get("total_channels", 0),
             url=result.get("url"),
             error=result.get("error"),
         )
+
+        # Enviar webhook se URL foi fornecida
+        if webhook_url:
+            logger.info(f"📤 Enviando webhook para {webhook_url}")
+            webhook_caller.send_webhook(
+                webhook_url=webhook_url,
+                job_id=f"scrape-channels-{int(start_time)}",
+                status="completed",
+                result=response_data.model_dump(),
+                execution_time_seconds=execution_time
+            )
+
+        return response_data
 
     except HTTPException:
         raise
@@ -922,11 +946,13 @@ async def scrape_channel(session_id: str, request: ScrapeChannelRequest):
             # Enviar webhook se URL foi fornecida
             if request.webhook_url:
                 logger.info(f"📤 Enviando webhook para {request.webhook_url}")
+                webhook_payload = response_data.model_dump()
+                webhook_payload["session_id"] = session_id  # Adicionar session_id
                 webhook_caller.send_webhook(
                     webhook_url=request.webhook_url,
                     job_id=session_id,
                     status="completed",
-                    result=response_data.model_dump(),
+                    result=webhook_payload,
                     execution_time_seconds=execution_time
                 )
 
@@ -994,11 +1020,13 @@ async def scrape_channel(session_id: str, request: ScrapeChannelRequest):
             # Enviar webhook se URL foi fornecida
             if request.webhook_url:
                 logger.info(f"📤 Enviando webhook para {request.webhook_url}")
+                webhook_payload = response_data.model_dump()
+                webhook_payload["session_id"] = session_id  # Adicionar session_id
                 webhook_caller.send_webhook(
                     webhook_url=request.webhook_url,
                     job_id=session_id,
                     status="completed",
-                    result=response_data.model_dump(),
+                    result=webhook_payload,
                     execution_time_seconds=execution_time
                 )
 
