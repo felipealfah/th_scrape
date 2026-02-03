@@ -314,31 +314,30 @@ def _validate_url(url: str) -> bool:
         return False
 
 
-@router.post("/scrape-channels", response_model=ChannelsListResponse)
-async def scrape_channels_simplified(request: ScrapeChannelsRequest = None) -> ChannelsListResponse:
+@router.post("/scrape-channels/{session_id}", response_model=ChannelsListResponse)
+async def scrape_channels_with_session(session_id: str, request: ScrapeChannelsRequest = None) -> ChannelsListResponse:
     """
-    Fazer scraping de canais do TubeHunt (Versão Simplificada)
+    Fazer scraping de lista de canais usando uma sessão existente
 
     ## Descrição
-    Faz login e extrai lista completa de canais com todos os dados.
-    Retorna resultado diretamente (síncrono, executado em thread separada).
-    Suporta webhook callback opcional.
+    Extrai lista de canais reusando a sessão e browser já abertos.
+    Não faz login novamente (mais rápido e eficiente).
+    Retorna resultado diretamente com webhook opcional.
 
-    ## Parâmetros (todos opcionais, com fallback para .env)
-    - `login_url`: URL de login (default: .env)
-    - `username`: Email/usuário (default: .env)
-    - `password`: Senha (default: .env)
-    - `wait_time`: Timeout em segundos (5-300, default: 60)
-    - `webhook_url` (opcional): URL para notificação ao final do scraping
+    ## Path Parameters
+    - `session_id`: ID da sessão (obtido em POST /login)
+
+    ## Body Parameters
+    - `scrape_url` (opcional): URL da página para extrair canais (fallback .env)
+    - `wait_time` (default: 15): Timeout em segundos (5-600)
+    - `webhook_url` (opcional): URL para notificação ao final
 
     ## Exemplo de uso
     ```bash
-    curl -X POST http://localhost:8000/api/v1/tubehunt/scrape-channels \\
+    curl -X POST http://localhost:8000/api/v1/tubehunt/scrape-channels/7f60430e-1c8b-48fb-bd39-4fa7a2599fa5 \\
       -H "Content-Type: application/json" \\
       -d '{
-        "login_url": "https://app.tubehunt.io/login",
-        "username": "seu@email.com",
-        "password": "sua_senha",
+        "scrape_url": "https://app.tubehunt.io/long/?page=1&OrderBy=DateDESC&ChangePerPage=50",
         "wait_time": 60,
         "webhook_url": "https://seu-webhook.com/callback"
       }'
@@ -347,47 +346,54 @@ async def scrape_channels_simplified(request: ScrapeChannelsRequest = None) -> C
     start_time = time.time()
 
     try:
+        # Buscar sessão existente
+        session = session_manager.get_session(session_id)
+        if not session:
+            raise HTTPException(
+                status_code=404,
+                detail=f"Sessão não encontrada: {session_id}"
+            )
+
         # Usar valores padrão da request ou fallback para .env
         if request is None:
             request = ScrapeChannelsRequest()
 
-        login_url = request.login_url or settings.url_login
-        username = request.username or settings.user
-        password = request.password or settings.password
+        scrape_url = request.scrape_url or settings.url_scrape_channels
         wait_time = request.wait_time
         webhook_url = request.webhook_url
 
         # Validações
-        if not username or not password:
+        if not _validate_url(scrape_url):
             raise HTTPException(
                 status_code=400,
-                detail="Credenciais não fornecidas e não configuradas no .env"
+                detail=f"scrape_url inválida: {scrape_url}"
             )
 
-        if not _validate_url(login_url):
-            raise HTTPException(
-                status_code=400,
-                detail=f"login_url inválida: {login_url}"
-            )
-
-        logger.info(f"Iniciando scraping de canais")
-        logger.info(f"  - Usuario: {username}")
+        logger.info(f"Iniciando scraping de canais com sessão {session_id}")
+        logger.info(f"  - URL: {scrape_url}")
         logger.info(f"  - Wait Time: {wait_time}s")
         if webhook_url:
             logger.info(f"  - Webhook: {webhook_url}")
 
-        # Executar scraping em thread separada (Playwright Sync não funciona em async context)
+        # Executar scraping reutilizando a sessão aberta
         def scrape_sync():
-            service = TubeHuntService()
-            service._create_driver()
             try:
-                result = service.scrape_channels(wait_time=wait_time)
-                return result
-            finally:
-                service.close()
+                page = session.page
+                service = TubeHuntService()
+                service.page = page
+                service.browser_manager = session.browser_manager
 
-        # Executar em thread para não bloquear event loop
-        result = await asyncio.to_thread(scrape_sync)
+                # Fazer scraping na página já carregada (já está logado)
+                result = service.scrape_channels(wait_time=wait_time, scrape_url=scrape_url)
+                return result
+
+            except Exception as e:
+                logger.error(f"❌ Erro no scraping: {str(e)}", exc_info=True)
+                raise
+
+        # Executar no executor
+        loop = asyncio.get_event_loop()
+        result = await loop.run_in_executor(None, scrape_sync)
 
         execution_time = time.time() - start_time
 
@@ -405,11 +411,13 @@ async def scrape_channels_simplified(request: ScrapeChannelsRequest = None) -> C
         # Enviar webhook se URL foi fornecida
         if webhook_url:
             logger.info(f"📤 Enviando webhook para {webhook_url}")
+            webhook_payload = response_data.model_dump()
+            webhook_payload["session_id"] = session_id  # Adicionar session_id
             webhook_caller.send_webhook(
                 webhook_url=webhook_url,
-                job_id=f"scrape-channels-{int(start_time)}",
+                job_id=f"scrape-channels-{session_id}",
                 status="completed",
-                result=response_data.model_dump(),
+                result=webhook_payload,
                 execution_time_seconds=execution_time
             )
 
@@ -418,10 +426,10 @@ async def scrape_channels_simplified(request: ScrapeChannelsRequest = None) -> C
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"❌ Erro ao fazer scraping: {str(e)}", exc_info=True)
+        logger.error(f"❌ Erro ao fazer scraping de canais: {str(e)}", exc_info=True)
         raise HTTPException(
             status_code=500,
-            detail=f"Erro ao fazer scraping: {str(e)}"
+            detail=f"Erro ao fazer scraping de canais: {str(e)}"
         )
 
 
