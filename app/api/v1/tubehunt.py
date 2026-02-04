@@ -974,11 +974,18 @@ async def scrape_channel(session_id: str, request: ScrapeChannelRequest):
                 channels_data = []
                 failed_channels = []
 
+                page = None
                 try:
-                    page = session.page
+                    # NÃO reusar page da thread principal (causa greenlet thread-binding error)
+                    # Criar nova página dentro da thread do job
+                    logger.info(f"[Job {job_id}] Criando nova página para scraping...")
+                    page = session.browser_manager.browser.new_page()
+
                     service = TubeHuntService()
                     service.page = page
                     service.browser_manager = session.browser_manager
+
+                    logger.info(f"[Job {job_id}] Página criada com sucesso")
 
                     # Scrape each channel sequentially
                     for idx, channel_link in enumerate(request.channel_links, 1):
@@ -1129,11 +1136,18 @@ async def scrape_channel_async(session_id: str, request: ScrapeChannelRequest) -
                 channels_data = []
                 failed_channels = []
 
+                page = None
                 try:
-                    page = session.page
+                    # NÃO reusar page da thread principal (causa greenlet thread-binding error)
+                    # Criar nova página dentro da thread do job
+                    logger.info(f"[Job {job_id}] Criando nova página para scraping...")
+                    page = session.browser_manager.browser.new_page()
+
                     service = TubeHuntService()
                     service.page = page
                     service.browser_manager = session.browser_manager
+
+                    logger.info(f"[Job {job_id}] Página criada com sucesso")
 
                     # Scrape each channel sequentially
                     for idx, channel_link in enumerate(request.channel_links, 1):
@@ -1194,6 +1208,14 @@ async def scrape_channel_async(session_id: str, request: ScrapeChannelRequest) -
                             error=str(e),
                             execution_time_seconds=time.time() - start_time
                         )
+                finally:
+                    # Fechar página criada
+                    if page:
+                        try:
+                            page.close()
+                            logger.info(f"[Job {job_id}] Página fechada com sucesso")
+                        except Exception as e:
+                            logger.warning(f"[Job {job_id}] Erro ao fechar página: {str(e)}")
 
             except Exception as e:
                 logger.error(f"[Job {job_id}] ❌ Erro crítico: {str(e)}", exc_info=True)
