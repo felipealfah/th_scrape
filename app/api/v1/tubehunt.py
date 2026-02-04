@@ -1136,18 +1136,26 @@ async def scrape_channel_async(session_id: str, request: ScrapeChannelRequest) -
                 channels_data = []
                 failed_channels = []
 
+                service = None
                 page = None
                 try:
-                    # NÃO reusar page da thread principal (causa greenlet thread-binding error)
-                    # Criar nova página dentro da thread do job
-                    logger.info(f"[Job {job_id}] Criando nova página para scraping...")
-                    page = session.browser_manager.browser.new_page()
+                    # Criar nova instância de serviço completamente independente
+                    # Playwright sync_api usa greenlet que é vinculado à thread - não pode ser reutilizado
+                    logger.info(f"[Job {job_id}] Criando browser independente na thread do job...")
 
                     service = TubeHuntService()
-                    service.page = page
-                    service.browser_manager = session.browser_manager
+                    service._create_driver()
 
-                    logger.info(f"[Job {job_id}] Página criada com sucesso")
+                    page = service.page
+                    logger.info(f"[Job {job_id}] Browser criado, fazendo login...")
+
+                    # Fazer login manualmente
+                    service._access_login_page()
+                    service._fill_credentials()
+                    service._submit_form()
+                    service._wait_for_redirect()
+
+                    logger.info(f"[Job {job_id}] Login bem-sucedido, iniciando scraping")
 
                     # Scrape each channel sequentially
                     for idx, channel_link in enumerate(request.channel_links, 1):
