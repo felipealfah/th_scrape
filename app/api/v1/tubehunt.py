@@ -1217,13 +1217,13 @@ async def scrape_channel_async(session_id: str, request: ScrapeChannelRequest) -
                             execution_time_seconds=time.time() - start_time
                         )
                 finally:
-                    # Fechar página criada
-                    if page:
+                    # Limpar recursos - browser manager e página
+                    if service:
                         try:
-                            page.close()
-                            logger.info(f"[Job {job_id}] Página fechada com sucesso")
+                            service.close()
+                            logger.info(f"[Job {job_id}] Browser e serviço fechados com sucesso")
                         except Exception as e:
-                            logger.warning(f"[Job {job_id}] Erro ao fechar página: {str(e)}")
+                            logger.warning(f"[Job {job_id}] Erro ao fechar serviço: {str(e)}")
 
             except Exception as e:
                 logger.error(f"[Job {job_id}] ❌ Erro crítico: {str(e)}", exc_info=True)
