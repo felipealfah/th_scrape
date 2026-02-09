@@ -1190,10 +1190,23 @@ async def scrape_channel_async(request: ScrapeChannelRequest) -> JobStartRespons
                     logger.info(f"[Job {job_id}] ✅ Scraping concluído: {len(channels_data)}/{len(request.channel_links)} canais")
 
                     # Preparar resultado para múltiplos canais
+                    # Converter ChannelDetailedData para dicts para serialização JSON
+                    channels_dicts = [
+                        {
+                            "channel_link": ch.channel_link,
+                            "keywords": ch.keywords,
+                            "subjects": ch.subjects,
+                            "niches": ch.niches,
+                            "views_30_days": ch.views_30_days,
+                            "revenue_30_days": ch.revenue_30_days
+                        }
+                        for ch in channels_data
+                    ]
+
                     job_result = {
                         "total_scraped": len(channels_data),
                         "total_requested": len(request.channel_links),
-                        "channels": channels_data,
+                        "channels": channels_dicts,
                         "failed_channels": failed_channels
                     }
 
