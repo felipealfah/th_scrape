@@ -26,12 +26,17 @@ import asyncio
 import threading
 from datetime import datetime
 from urllib.parse import urlparse
+from concurrent.futures import ThreadPoolExecutor
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/tubehunt", tags=["tubehunt"])
 
 # Tracking startup time for uptime calculation
 _startup_time = time.time()
+
+# Executor para jobs de scraping com limite de 2 workers concorrentes
+# Previne uso excessivo de recursos (Playwright browsers)
+scraping_executor = ThreadPoolExecutor(max_workers=2, thread_name_prefix="scraper")
 
 
 
@@ -463,7 +468,7 @@ async def scrape_channels_async(request: ScrapeChannelsRequest = None) -> JobSta
 
         # Disparar em background usando executor
         loop = asyncio.get_event_loop()
-        loop.run_in_executor(None, scrape_job_sync)
+        loop.run_in_executor(scraping_executor, scrape_job_sync)
 
         # Retornar resposta imediata com job_id
         job_dict = job_manager.get_job_dict(job_id)
@@ -1228,7 +1233,7 @@ async def scrape_channel_async(request: ScrapeChannelRequest) -> JobStartRespons
 
         # Disparar em background usando executor
         loop = asyncio.get_event_loop()
-        loop.run_in_executor(None, scrape_job_sync)
+        loop.run_in_executor(scraping_executor, scrape_job_sync)
 
         # Retornar resposta imediata com job_id
         job_dict = job_manager.get_job_dict(job_id)
