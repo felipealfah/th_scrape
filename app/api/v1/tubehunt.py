@@ -12,10 +12,14 @@ from app.schemas.tubehunt import (
     ChannelDetailedData,
     ScrapeChannelRequest,
     ScrapeChannelsListResponse,
+    JobStartResponse,
+    JobStatusResponse,
+    JobResultResponse,
 )
 from app.services.tubehunt import TubeHuntService
 from app.services.webhook import webhook_caller
 from app.core.config import settings
+from app.core.job_queue import job_manager
 import logging
 import time
 import asyncio
@@ -314,122 +318,313 @@ def _validate_url(url: str) -> bool:
         return False
 
 
-@router.post("/scrape-channels/{session_id}", response_model=ChannelsListResponse)
-async def scrape_channels_with_session(session_id: str, request: ScrapeChannelsRequest = None) -> ChannelsListResponse:
+@router.post("/scrape-channels", response_model=JobStartResponse)
+async def scrape_channels_async(request: ScrapeChannelsRequest = None) -> JobStartResponse:
     """
-    Fazer scraping de lista de canais usando uma sessão existente
+    Iniciar job assíncrono de scraping de canais
 
     ## Descrição
-    Extrai lista de canais reusando a sessão e browser já abertos.
-    Não faz login novamente (mais rápido e eficiente).
-    Retorna resultado diretamente com webhook opcional.
+    Dispara um job de scraping de canais em background.
+    Retorna imediatamente com um `job_id`.
+    Quando terminar, chama um webhook com os resultados (se fornecido).
 
-    ## Path Parameters
-    - `session_id`: ID da sessão (obtido em POST /login)
+    Use `GET /scrape-channels/status/{job_id}` para consultar o progresso.
 
     ## Body Parameters
-    - `scrape_url` (opcional): URL da página para extrair canais (fallback .env)
-    - `wait_time` (default: 15): Timeout em segundos (5-600)
-    - `webhook_url` (opcional): URL para notificação ao final
+    - **username** (opcional): Email/username (fallback .env)
+    - **password** (opcional): Senha (fallback .env)
+    - **scrape_url** (opcional): URL da página para extrair canais (fallback .env)
+    - **wait_time** (default: 15): Timeout em segundos (5-600)
+    - **webhook_url** (opcional): URL para notificação ao final
 
     ## Exemplo de uso
     ```bash
-    curl -X POST http://localhost:8000/api/v1/tubehunt/scrape-channels/7f60430e-1c8b-48fb-bd39-4fa7a2599fa5 \\
+    curl -X POST http://localhost:8000/api/v1/tubehunt/scrape-channels \\
       -H "Content-Type: application/json" \\
       -d '{
+        "username": "seu@email.com",
+        "password": "sua_senha",
         "scrape_url": "https://app.tubehunt.io/long/?page=1&OrderBy=DateDESC&ChangePerPage=50",
         "wait_time": 60,
         "webhook_url": "https://seu-webhook.com/callback"
       }'
     ```
+
+    ## Resposta
+    ```json
+    {
+      "job_id": "550e8400-e29b-41d4-a716-446655440000",
+      "status": "pending",
+      "message": "Job enfileirado com sucesso",
+      "created_at": "2026-02-09T16:57:18.000000"
+    }
+    ```
+
+    Use o `job_id` para consultar status: `GET /scrape-channels/status/{job_id}`
     """
-    start_time = time.time()
-
     try:
-        # Buscar sessão existente
-        session = session_manager.get_session(session_id)
-        if not session:
-            raise HTTPException(
-                status_code=404,
-                detail=f"Sessão não encontrada: {session_id}"
-            )
-
         # Usar valores padrão da request ou fallback para .env
         if request is None:
             request = ScrapeChannelsRequest()
 
+        # Credenciais
+        username = request.username or settings.user
+        password = request.password or settings.password
         scrape_url = request.scrape_url or settings.url_scrape_channels
         wait_time = request.wait_time
         webhook_url = request.webhook_url
 
         # Validações
+        if not username or not password:
+            raise HTTPException(
+                status_code=400,
+                detail="Credenciais não fornecidas. Forneça username/password ou configure .env"
+            )
+
         if not _validate_url(scrape_url):
             raise HTTPException(
                 status_code=400,
                 detail=f"scrape_url inválida: {scrape_url}"
             )
 
-        logger.info(f"Iniciando scraping de canais com sessão {session_id}")
+        # Criar job
+        job_id = job_manager.create_job()
+
+        logger.info(f"📋 Job criado: {job_id}")
         logger.info(f"  - URL: {scrape_url}")
         logger.info(f"  - Wait Time: {wait_time}s")
         if webhook_url:
             logger.info(f"  - Webhook: {webhook_url}")
 
-        # Executar scraping reutilizando a sessão aberta
-        def scrape_sync():
-            try:
-                page = session.page
-                service = TubeHuntService()
-                service.page = page
-                service.browser_manager = session.browser_manager
+        # Disparar scraping em background
+        def scrape_job_sync():
+            job_manager.mark_job_processing(job_id)
+            logger.info(f"⏳ Job {job_id} iniciado")
 
-                # Fazer scraping na página já carregada (já está logado)
+            service = TubeHuntService()
+            service._create_driver()
+            try:
+                # Login + scraping tudo em uma única thread
+                logger.info(f"[Job {job_id}] Fazendo login...")
+                service.username = username
+                service.password = password
+                service._access_login_page()
+                service._fill_credentials()
+                service._submit_form()
+                service._wait_for_redirect()
+
+                logger.info(f"[Job {job_id}] Login concluído. Iniciando scraping...")
                 result = service.scrape_channels(wait_time=wait_time, scrape_url=scrape_url)
-                return result
+
+                logger.info(f"[Job {job_id}] Scraping completo: {result.get('total_channels', 0)} canais")
+
+                # Preparar resultado
+                job_result = {
+                    "success": result["success"],
+                    "channels": result.get("channels", []),
+                    "total_channels": result.get("total_channels", 0),
+                    "url": result.get("url"),
+                    "error": result.get("error"),
+                }
+
+                job_manager.mark_job_completed(job_id, job_result)
+
+                # Enviar webhook se fornecido
+                if webhook_url:
+                    logger.info(f"[Job {job_id}] 📤 Enviando webhook para {webhook_url}")
+                    webhook_caller.send_webhook(
+                        webhook_url=webhook_url,
+                        job_id=job_id,
+                        status="completed",
+                        result=job_result,
+                        execution_time_seconds=None  # job_manager já calcula
+                    )
 
             except Exception as e:
-                logger.error(f"❌ Erro no scraping: {str(e)}", exc_info=True)
-                raise
+                logger.error(f"[Job {job_id}] ❌ Erro: {str(e)}", exc_info=True)
+                job_manager.mark_job_failed(job_id, str(e))
 
-        # Executar no executor
+                # Enviar webhook com erro se fornecido
+                if webhook_url:
+                    logger.info(f"[Job {job_id}] 📤 Enviando webhook de erro para {webhook_url}")
+                    webhook_caller.send_webhook(
+                        webhook_url=webhook_url,
+                        job_id=job_id,
+                        status="failed",
+                        result=None,
+                        error=str(e)
+                    )
+
+            finally:
+                try:
+                    service.close()
+                except:
+                    pass
+
+        # Disparar em background usando executor
         loop = asyncio.get_event_loop()
-        result = await loop.run_in_executor(None, scrape_sync)
+        loop.run_in_executor(None, scrape_job_sync)
 
-        execution_time = time.time() - start_time
-
-        logger.info(f"✅ Scraping completo: {result.get('total_channels', 0)} canais extraídos")
-
-        # Preparar resposta
-        response_data = ChannelsListResponse(
-            success=result["success"],
-            channels=result.get("channels", []),
-            total_channels=result.get("total_channels", 0),
-            url=result.get("url"),
-            error=result.get("error"),
+        # Retornar resposta imediata com job_id
+        job_dict = job_manager.get_job_dict(job_id)
+        return JobStartResponse(
+            job_id=job_id,
+            status=job_dict["status"],
+            message=job_dict.get("message", "Job enfileirado com sucesso"),
+            created_at=datetime.fromisoformat(job_dict["created_at"])
         )
-
-        # Enviar webhook se URL foi fornecida
-        if webhook_url:
-            logger.info(f"📤 Enviando webhook para {webhook_url}")
-            webhook_payload = response_data.model_dump()
-            webhook_payload["session_id"] = session_id  # Adicionar session_id
-            webhook_caller.send_webhook(
-                webhook_url=webhook_url,
-                job_id=f"scrape-channels-{session_id}",
-                status="completed",
-                result=webhook_payload,
-                execution_time_seconds=execution_time
-            )
-
-        return response_data
 
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"❌ Erro ao fazer scraping de canais: {str(e)}", exc_info=True)
+        logger.error(f"❌ Erro ao criar job: {str(e)}", exc_info=True)
         raise HTTPException(
             status_code=500,
-            detail=f"Erro ao fazer scraping de canais: {str(e)}"
+            detail=f"Erro ao criar job de scraping: {str(e)}"
+        )
+
+
+@router.get("/scrape-channels/status/{job_id}", response_model=JobStatusResponse)
+async def get_scrape_channels_status(job_id: str) -> JobStatusResponse:
+    """
+    Consultar status de um job de scraping de canais
+
+    ## Path Parameters
+    - `job_id`: ID do job (obtido em POST /scrape-channels)
+
+    ## Exemplo de uso
+    ```bash
+    curl -X GET http://localhost:8000/api/v1/tubehunt/scrape-channels/status/550e8400-e29b-41d4-a716-446655440000
+    ```
+
+    ## Respostas possíveis
+
+    ### Enfileirado (pending)
+    ```json
+    {
+      "job_id": "550e8400-e29b-41d4-a716-446655440000",
+      "status": "pending",
+      "progress": 0,
+      "message": "Job enfileirado, aguardando execução",
+      "started_at": null
+    }
+    ```
+
+    ### Em processamento (processing)
+    ```json
+    {
+      "job_id": "550e8400-e29b-41d4-a716-446655440000",
+      "status": "processing",
+      "progress": 45,
+      "message": "Job em processamento... 45% completo",
+      "started_at": "2026-02-09T16:57:20.000000"
+    }
+    ```
+
+    ### Completo (completed)
+    ```json
+    {
+      "job_id": "550e8400-e29b-41d4-a716-446655440000",
+      "status": "completed",
+      "progress": 100,
+      "result": { ... dados do scraping ... },
+      "completed_at": "2026-02-09T17:00:30.000000",
+      "execution_time_seconds": 190.5
+    }
+    ```
+    """
+    try:
+        job_dict = job_manager.get_job_dict(job_id)
+        if not job_dict:
+            raise HTTPException(
+                status_code=404,
+                detail=f"Job não encontrado: {job_id}"
+            )
+
+        # Extrair campos e converter para response model
+        return JobStatusResponse(
+            job_id=job_dict["job_id"],
+            status=job_dict["status"],
+            progress=job_dict["progress"],
+            message=job_dict.get("message", ""),
+            started_at=datetime.fromisoformat(job_dict["started_at"]) if job_dict.get("started_at") else None
+        )
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"❌ Erro ao consultar status do job {job_id}: {str(e)}", exc_info=True)
+        raise HTTPException(
+            status_code=500,
+            detail=f"Erro ao consultar status do job: {str(e)}"
+        )
+
+
+@router.get("/scrape-channels/result/{job_id}", response_model=JobResultResponse)
+async def get_scrape_channels_result(job_id: str) -> JobResultResponse:
+    """
+    Obter resultado completo de um job de scraping de canais
+
+    ## Path Parameters
+    - `job_id`: ID do job (obtido em POST /scrape-channels)
+
+    ## Descrição
+    Retorna o resultado completo do scraping, incluindo lista de canais,
+    tempo de execução e status final.
+
+    Espere o job estar em status "completed" antes de chamar este endpoint.
+
+    ## Exemplo de uso
+    ```bash
+    curl -X GET http://localhost:8000/api/v1/tubehunt/scrape-channels/result/550e8400-e29b-41d4-a716-446655440000
+    ```
+
+    ## Resposta
+    ```json
+    {
+      "job_id": "550e8400-e29b-41d4-a716-446655440000",
+      "status": "completed",
+      "result": {
+        "success": true,
+        "channels": [ ... ],
+        "total_channels": 50,
+        "url": "https://app.tubehunt.io/long/?page=1&OrderBy=DateDESC&ChangePerPage=50",
+        "error": null
+      },
+      "execution_time_seconds": 190.5,
+      "completed_at": "2026-02-09T17:00:30.000000"
+    }
+    ```
+    """
+    try:
+        job_dict = job_manager.get_job_dict(job_id)
+        if not job_dict:
+            raise HTTPException(
+                status_code=404,
+                detail=f"Job não encontrado: {job_id}"
+            )
+
+        if job_dict["status"] not in ["completed", "failed"]:
+            raise HTTPException(
+                status_code=202,
+                detail=f"Job ainda não foi concluído. Status: {job_dict['status']}"
+            )
+
+        return JobResultResponse(
+            job_id=job_dict["job_id"],
+            status=job_dict["status"],
+            result=job_dict.get("result"),
+            execution_time_seconds=job_dict.get("execution_time_seconds"),
+            completed_at=datetime.fromisoformat(job_dict["completed_at"]) if job_dict.get("completed_at") else None
+        )
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"❌ Erro ao obter resultado do job {job_id}: {str(e)}", exc_info=True)
+        raise HTTPException(
+            status_code=500,
+            detail=f"Erro ao obter resultado do job: {str(e)}"
         )
 
 
@@ -827,225 +1022,222 @@ async def login_with_session(request: LoginRequest) -> LoginResponse:
         )
 
 
-@router.post("/scrape-channel/{session_id}")
-async def scrape_channel(session_id: str, request: ScrapeChannelRequest):
+@router.post("/scrape-channel", response_model=JobStartResponse)
+async def scrape_channel_async(request: ScrapeChannelRequest) -> JobStartResponse:
     """
-    Scraping de um ou múltiplos canais usando sessão persistente
+    Iniciar job assíncrono de scraping de canal(is)
 
     ## Descrição
-    Usa uma sessão persistente (obtida via POST /login) para scraping de canal(is).
-    - Se fornecer **channel_link**: retorna dados de um canal
-    - Se fornecer **channel_links**: retorna lista de canais
+    Dispara um job de scraping de um ou múltiplos canais em background.
+    Retorna imediatamente com um `job_id`.
+    Quando terminar, chama um webhook com os resultados (se fornecido).
 
-    Extrai 6 campos: keywords, subjects, niches, views_30_days, revenue_30_days.
+    - Se fornecer **channel_link**: scraping de um canal
+    - Se fornecer **channel_links**: scraping de múltiplos canais
 
-    ## Parâmetros
-    - **session_id**: ID da sessão (obtido em POST /login)
-    - **channel_link**: URL de um canal (mutuamente exclusivo com channel_links)
-    - **channel_links**: Lista de URLs de canais (mutuamente exclusivo com channel_link)
-    - **webhook_url** (opcional): URL do webhook para notificação ao final do scraping
+    Use `GET /scrape-channel/status/{job_id}` para consultar o progresso.
+    Use `GET /scrape-channel/result/{job_id}` para obter o resultado final.
+
+    ## Body Parameters
+    - **username** (opcional): Email/username (fallback .env)
+    - **password** (opcional): Senha (fallback .env)
+    - **channel_link** (opcional): URL de um canal
+    - **channel_links** (opcional): Lista de URLs de canais
+    - **wait_time** (default: 15): Timeout em segundos (5-600)
+    - **webhook_url** (opcional): URL para notificação ao final
 
     ## Exemplos de uso
 
     ### Um canal
     ```bash
-    curl -X POST http://localhost:8000/api/v1/tubehunt/scrape-channel/550e8400-e29b-41d4-a716-446655440000 \\
+    curl -X POST http://localhost:8000/api/v1/tubehunt/scrape-channel \\
       -H "Content-Type: application/json" \\
       -d '{
+        "username": "seu@email.com",
+        "password": "sua_senha",
         "channel_link": "https://app.tubehunt.io/channel/UCEvkNQR22vQYzp2hil_Z9kA",
-        "webhook_url": "https://webhook.site/unique-id"
+        "webhook_url": "https://seu-webhook.com"
       }'
     ```
 
     ### Múltiplos canais
     ```bash
-    curl -X POST http://localhost:8000/api/v1/tubehunt/scrape-channel/550e8400-e29b-41d4-a716-446655440000 \\
+    curl -X POST http://localhost:8000/api/v1/tubehunt/scrape-channel \\
       -H "Content-Type: application/json" \\
       -d '{
+        "username": "seu@email.com",
+        "password": "sua_senha",
         "channel_links": [
           "https://app.tubehunt.io/channel/UCEvkNQR22vQYzp2hil_Z9kA",
           "https://app.tubehunt.io/channel/UC_x5XG1OV2P6uZZ5FSM9Ttw"
         ],
-        "webhook_url": "https://webhook.site/unique-id"
+        "webhook_url": "https://seu-webhook.com"
       }'
     ```
 
-    ## Respostas
-
-    ### Um canal
+    ## Resposta
     ```json
     {
-      "channel_link": "https://app.tubehunt.io/channel/UCEvkNQR22vQYzp2hil_Z9kA",
-      "keywords": ["cruceros 2025", "viajar en crucero"],
-      "subjects": ["Tourism", "Food"],
-      "niches": ["Cruzeiros"],
-      "views_30_days": "357.96k",
-      "revenue_30_days": "$239,00 - $781,00"
+      "job_id": "550e8400-e29b-41d4-a716-446655440000",
+      "status": "pending",
+      "message": "Job enfileirado com sucesso",
+      "created_at": "2026-02-09T16:57:18.000000"
     }
     ```
 
-    ### Múltiplos canais
-    ```json
-    {
-      "total_scraped": 2,
-      "total_requested": 2,
-      "channels": [...],
-      "failed_channels": []
-    }
-    ```
+    Consulte o status com: `GET /scrape-channel/status/{job_id}`
     """
-    start_time = time.time()
-
     try:
         # Validar inputs
         request.validate_inputs()
 
-        # Validar session_id
-        session = session_manager.get_session(session_id)
-        if not session:
+        # Credenciais
+        username = request.username or settings.user
+        password = request.password or settings.password
+
+        # Validações
+        if not username or not password:
             raise HTTPException(
-                status_code=401,
-                detail=f"Sessão inválida ou expirada: {session_id}"
+                status_code=400,
+                detail="Credenciais não fornecidas. Forneça username/password ou configure .env"
             )
 
-        logger.info(f"✅ Sessão válida encontrada: {session_id}")
+        # Criar job
+        job_id = job_manager.create_job()
 
-        # Detectar se é um canal ou lista
+        logger.info(f"📋 Job criado: {job_id}")
         if request.channel_link:
-            # ===== MODO: UM CANAL =====
-            logger.info(f"🔍 Scrapeando um canal: {request.channel_link}")
+            logger.info(f"  - Canal: {request.channel_link}")
+        else:
+            logger.info(f"  - Canais: {len(request.channel_links)}")
+        if request.webhook_url:
+            logger.info(f"  - Webhook: {request.webhook_url}")
 
-            def scrape_single():
-                try:
-                    page = session.page
-                    service = TubeHuntService()
-                    service.page = page
-                    service.browser_manager = session.browser_manager
+        # Disparar scraping em background
+        def scrape_job_sync():
+            job_manager.mark_job_processing(job_id)
+            logger.info(f"⏳ Job {job_id} iniciado")
 
-                    logger.info(f"📍 Extraindo dados do canal...")
+            service = TubeHuntService()
+            service._create_driver()
+            try:
+                # Login na MESMA thread
+                logger.info(f"[Job {job_id}] Fazendo login...")
+                service.username = username
+                service.password = password
+                service._access_login_page()
+                service._fill_credentials()
+                service._submit_form()
+                service._wait_for_redirect()
+
+                page = service.get_page()
+                logger.info(f"[Job {job_id}] Login concluído")
+
+                # ===== UM CANAL =====
+                if request.channel_link:
+                    logger.info(f"[Job {job_id}] Extraindo dados do canal: {request.channel_link}")
                     channel_data = service.scrape_channel_details(page, request.channel_link)
 
                     if not channel_data:
                         raise Exception("Falha ao extrair dados do canal")
 
-                    logger.info(f"✅ Scrapeado com sucesso!")
-                    return channel_data
+                    logger.info(f"[Job {job_id}] ✅ Canal extraído com sucesso")
 
-                except Exception as e:
-                    logger.error(f"❌ Erro no scraping: {str(e)}", exc_info=True)
-                    raise
+                    # Preparar resultado para um canal
+                    job_result = {
+                        "channel_link": channel_data.channel_link,
+                        "keywords": channel_data.keywords,
+                        "subjects": channel_data.subjects,
+                        "niches": channel_data.niches,
+                        "views_30_days": channel_data.views_30_days,
+                        "revenue_30_days": channel_data.revenue_30_days
+                    }
 
-            # Executar no executor
-            loop = asyncio.get_event_loop()
-            channel_data = await loop.run_in_executor(None, scrape_single)
+                # ===== MÚLTIPLOS CANAIS =====
+                else:
+                    logger.info(f"[Job {job_id}] Extraindo dados de {len(request.channel_links)} canais")
+                    channels_data = []
+                    failed_channels = []
 
-            execution_time = time.time() - start_time
-
-            # Preparar resposta
-            response_data = ChannelDetailedData(
-                channel_link=channel_data.channel_link,
-                keywords=channel_data.keywords,
-                subjects=channel_data.subjects,
-                niches=channel_data.niches,
-                views_30_days=channel_data.views_30_days,
-                revenue_30_days=channel_data.revenue_30_days
-            )
-
-            # Enviar webhook se URL foi fornecida
-            if request.webhook_url:
-                logger.info(f"📤 Enviando webhook para {request.webhook_url}")
-                webhook_payload = response_data.model_dump()
-                webhook_payload["session_id"] = session_id  # Adicionar session_id
-                webhook_caller.send_webhook(
-                    webhook_url=request.webhook_url,
-                    job_id=session_id,
-                    status="completed",
-                    result=webhook_payload,
-                    execution_time_seconds=execution_time
-                )
-
-            return response_data
-
-        else:
-            # ===== MODO: MÚLTIPLOS CANAIS =====
-            logger.info(f"🔍 Scrapeando {len(request.channel_links)} canais")
-
-            def scrape_batch():
-                channels_data = []
-                failed_channels = []
-
-                page = None
-                try:
-                    # NÃO reusar page da thread principal (causa greenlet thread-binding error)
-                    # Criar nova página dentro da thread do job
-                    logger.info(f"[Job {job_id}] Criando nova página para scraping...")
-                    page = session.browser_manager.browser.new_page()
-
-                    service = TubeHuntService()
-                    service.page = page
-                    service.browser_manager = session.browser_manager
-
-                    logger.info(f"[Job {job_id}] Página criada com sucesso")
-
-                    # Scrape each channel sequentially
                     for idx, channel_link in enumerate(request.channel_links, 1):
                         try:
-                            logger.info(f"[{idx}/{len(request.channel_links)}] 🔍 Extraindo: {channel_link}")
+                            logger.info(f"[Job {job_id}] [{idx}/{len(request.channel_links)}] Extraindo: {channel_link}")
                             channel_data = service.scrape_channel_details(page, channel_link)
 
                             if not channel_data:
                                 raise Exception("Falha ao extrair dados do canal")
 
                             channels_data.append(channel_data)
-                            logger.info(f"[{idx}/{len(request.channel_links)}] ✅ Sucesso!")
+                            logger.info(f"[Job {job_id}] [{idx}/{len(request.channel_links)}] ✅ Sucesso")
+
+                            # Atualizar progresso
+                            progress = int((idx / len(request.channel_links)) * 100)
+                            job_manager.update_job_progress(job_id, progress)
 
                         except Exception as e:
-                            logger.error(f"[{idx}/{len(request.channel_links)}] ❌ Erro: {str(e)}", exc_info=True)
+                            logger.error(f"[Job {job_id}] [{idx}/{len(request.channel_links)}] ❌ Erro: {str(e)}", exc_info=True)
                             failed_channels.append({
                                 "channel_link": channel_link,
                                 "error": str(e)
                             })
                             continue
 
-                    return {
-                        "channels": channels_data,
-                        "failed_channels": failed_channels,
+                    logger.info(f"[Job {job_id}] ✅ Scraping concluído: {len(channels_data)}/{len(request.channel_links)} canais")
+
+                    # Preparar resultado para múltiplos canais
+                    job_result = {
                         "total_scraped": len(channels_data),
-                        "total_requested": len(request.channel_links)
+                        "total_requested": len(request.channel_links),
+                        "channels": channels_data,
+                        "failed_channels": failed_channels
                     }
 
-                except Exception as e:
-                    logger.error(f"❌ Erro crítico: {str(e)}", exc_info=True)
-                    raise
+                job_manager.mark_job_completed(job_id, job_result)
 
-            # Executar no executor
-            loop = asyncio.get_event_loop()
-            batch_result = await loop.run_in_executor(None, scrape_batch)
+                # Enviar webhook se fornecido
+                if request.webhook_url:
+                    logger.info(f"[Job {job_id}] 📤 Enviando webhook para {request.webhook_url}")
+                    webhook_caller.send_webhook(
+                        webhook_url=request.webhook_url,
+                        job_id=job_id,
+                        status="completed",
+                        result=job_result,
+                        execution_time_seconds=None  # job_manager já calcula
+                    )
 
-            execution_time = time.time() - start_time
+            except Exception as e:
+                logger.error(f"[Job {job_id}] ❌ Erro: {str(e)}", exc_info=True)
+                job_manager.mark_job_failed(job_id, str(e))
 
-            # Preparar resposta
-            response_data = ScrapeChannelsListResponse(
-                total_scraped=batch_result["total_scraped"],
-                total_requested=batch_result["total_requested"],
-                channels=batch_result["channels"],
-                failed_channels=batch_result["failed_channels"]
-            )
+                # Enviar webhook com erro se fornecido
+                if request.webhook_url:
+                    logger.info(f"[Job {job_id}] 📤 Enviando webhook de erro para {request.webhook_url}")
+                    webhook_caller.send_webhook(
+                        webhook_url=request.webhook_url,
+                        job_id=job_id,
+                        status="failed",
+                        result=None,
+                        error=str(e)
+                    )
 
-            # Enviar webhook se URL foi fornecida
-            if request.webhook_url:
-                logger.info(f"📤 Enviando webhook para {request.webhook_url}")
-                webhook_payload = response_data.model_dump()
-                webhook_payload["session_id"] = session_id  # Adicionar session_id
-                webhook_caller.send_webhook(
-                    webhook_url=request.webhook_url,
-                    job_id=session_id,
-                    status="completed",
-                    result=webhook_payload,
-                    execution_time_seconds=execution_time
-                )
+            finally:
+                try:
+                    service.close()
+                except:
+                    pass
 
-            return response_data
+        # Disparar em background usando executor
+        loop = asyncio.get_event_loop()
+        loop.run_in_executor(None, scrape_job_sync)
+
+        # Retornar resposta imediata com job_id
+        job_dict = job_manager.get_job_dict(job_id)
+        return JobStartResponse(
+            job_id=job_id,
+            status=job_dict["status"],
+            message=job_dict.get("message", "Job enfileirado com sucesso"),
+            created_at=datetime.fromisoformat(job_dict["created_at"])
+        )
 
     except ValueError as e:
         logger.error(f"❌ Erro de validação: {str(e)}")
@@ -1056,10 +1248,167 @@ async def scrape_channel(session_id: str, request: ScrapeChannelRequest):
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"❌ Erro ao fazer scraping: {str(e)}", exc_info=True)
+        logger.error(f"❌ Erro ao criar job: {str(e)}", exc_info=True)
         raise HTTPException(
             status_code=500,
-            detail=f"Erro ao scraping: {str(e)}"
+            detail=f"Erro ao criar job de scraping: {str(e)}"
+        )
+
+
+@router.get("/scrape-channel/status/{job_id}", response_model=JobStatusResponse)
+async def get_scrape_channel_status(job_id: str) -> JobStatusResponse:
+    """
+    Consultar status de um job de scraping de canal(is)
+
+    ## Path Parameters
+    - `job_id`: ID do job (obtido em POST /scrape-channel)
+
+    ## Exemplo de uso
+    ```bash
+    curl -X GET http://localhost:8000/api/v1/tubehunt/scrape-channel/status/550e8400-e29b-41d4-a716-446655440000
+    ```
+
+    ## Respostas possíveis
+
+    ### Enfileirado (pending)
+    ```json
+    {
+      "job_id": "550e8400-e29b-41d4-a716-446655440000",
+      "status": "pending",
+      "progress": 0,
+      "message": "Job enfileirado, aguardando execução",
+      "started_at": null
+    }
+    ```
+
+    ### Em processamento (processing)
+    ```json
+    {
+      "job_id": "550e8400-e29b-41d4-a716-446655440000",
+      "status": "processing",
+      "progress": 50,
+      "message": "Job em processamento... 50% completo",
+      "started_at": "2026-02-09T16:57:20.000000"
+    }
+    ```
+
+    ### Completo (completed)
+    ```json
+    {
+      "job_id": "550e8400-e29b-41d4-a716-446655440000",
+      "status": "completed",
+      "progress": 100,
+      "completed_at": "2026-02-09T17:00:30.000000",
+      "execution_time_seconds": 190.5
+    }
+    ```
+    """
+    try:
+        job_dict = job_manager.get_job_dict(job_id)
+        if not job_dict:
+            raise HTTPException(
+                status_code=404,
+                detail=f"Job não encontrado: {job_id}"
+            )
+
+        return JobStatusResponse(
+            job_id=job_dict["job_id"],
+            status=job_dict["status"],
+            progress=job_dict["progress"],
+            message=job_dict.get("message", ""),
+            started_at=datetime.fromisoformat(job_dict["started_at"]) if job_dict.get("started_at") else None
+        )
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"❌ Erro ao consultar status do job {job_id}: {str(e)}", exc_info=True)
+        raise HTTPException(
+            status_code=500,
+            detail=f"Erro ao consultar status do job: {str(e)}"
+        )
+
+
+@router.get("/scrape-channel/result/{job_id}", response_model=JobResultResponse)
+async def get_scrape_channel_result(job_id: str) -> JobResultResponse:
+    """
+    Obter resultado completo de um job de scraping de canal(is)
+
+    ## Path Parameters
+    - `job_id`: ID do job (obtido em POST /scrape-channel)
+
+    ## Descrição
+    Retorna o resultado completo do scraping.
+    Espere o job estar em status "completed" antes de chamar este endpoint.
+
+    ## Exemplo de uso
+    ```bash
+    curl -X GET http://localhost:8000/api/v1/tubehunt/scrape-channel/result/550e8400-e29b-41d4-a716-446655440000
+    ```
+
+    ## Resposta (um canal)
+    ```json
+    {
+      "job_id": "550e8400-e29b-41d4-a716-446655440000",
+      "status": "completed",
+      "result": {
+        "channel_link": "https://app.tubehunt.io/channel/UCEvkNQR22vQYzp2hil_Z9kA",
+        "keywords": ["cruceros 2025", "viajar en crucero"],
+        "subjects": ["Tourism", "Food"],
+        "niches": ["Cruzeiros"],
+        "views_30_days": "357.96k",
+        "revenue_30_days": "$239,00 - $781,00"
+      },
+      "execution_time_seconds": 45.2,
+      "completed_at": "2026-02-09T17:00:30.000000"
+    }
+    ```
+
+    ## Resposta (múltiplos canais)
+    ```json
+    {
+      "job_id": "550e8400-e29b-41d4-a716-446655440000",
+      "status": "completed",
+      "result": {
+        "total_scraped": 2,
+        "total_requested": 2,
+        "channels": [...],
+        "failed_channels": []
+      },
+      "execution_time_seconds": 120.5,
+      "completed_at": "2026-02-09T17:02:00.000000"
+    }
+    ```
+    """
+    try:
+        job_dict = job_manager.get_job_dict(job_id)
+        if not job_dict:
+            raise HTTPException(
+                status_code=404,
+                detail=f"Job não encontrado: {job_id}"
+            )
+
+        if job_dict["status"] not in ["completed", "failed"]:
+            raise HTTPException(
+                status_code=202,
+                detail=f"Job ainda não foi concluído. Status: {job_dict['status']}"
+            )
+
+        return JobResultResponse(
+            job_id=job_dict["job_id"],
+            status=job_dict["status"],
+            result=job_dict.get("result"),
+            execution_time_seconds=job_dict.get("execution_time_seconds"),
+            completed_at=datetime.fromisoformat(job_dict["completed_at"]) if job_dict.get("completed_at") else None
+        )
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"❌ Erro ao obter resultado do job {job_id}: {str(e)}", exc_info=True)
+        raise HTTPException(
+            status_code=500,
+            detail=f"Erro ao obter resultado do job: {str(e)}"
         )
 
 

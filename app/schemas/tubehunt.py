@@ -521,8 +521,16 @@ class ChannelDetailedData(BaseModel):
 
 class ScrapeChannelRequest(BaseModel):
     """Request model para scraping de canal(is) - individual ou múltiplos"""
+    # Credenciais (opcional, usa .env como fallback)
+    username: Optional[str] = Field(None, description="Usuário/Email (fallback: .env)")
+    password: Optional[str] = Field(None, description="Senha (fallback: .env)")
+
+    # Canais para scraping
     channel_link: Optional[str] = Field(None, description="URL completa de um canal (ex: https://app.tubehunt.io/channel/UC...)")
     channel_links: Optional[list[str]] = Field(None, description="Lista de URLs completas de canais")
+
+    # Opções
+    wait_time: int = Field(default=15, ge=5, le=600, description="Tempo de espera em segundos (máximo 10 minutos)")
     webhook_url: Optional[str] = Field(None, description="URL do webhook para notificação ao terminar o scraping (opcional)")
 
     class Config:
@@ -531,23 +539,19 @@ class ScrapeChannelRequest(BaseModel):
                 {
                     "title": "Um canal",
                     "value": {
+                        "username": "seu@email.com",
+                        "password": "sua_senha",
                         "channel_link": "https://app.tubehunt.io/channel/UCEvkNQR22vQYzp2hil_Z9kA"
                     }
                 },
                 {
                     "title": "Múltiplos canais",
                     "value": {
+                        "username": "seu@email.com",
+                        "password": "sua_senha",
                         "channel_links": [
                             "https://app.tubehunt.io/channel/UCEvkNQR22vQYzp2hil_Z9kA",
                             "https://app.tubehunt.io/channel/UC_x5XG1OV2P6uZZ5FSM9Ttw"
-                        ]
-                    }
-                },
-                {
-                    "title": "Com webhook",
-                    "value": {
-                        "channel_links": [
-                            "https://app.tubehunt.io/channel/UCEvkNQR22vQYzp2hil_Z9kA"
                         ],
                         "webhook_url": "https://seu-webhook.com/resultado"
                     }
