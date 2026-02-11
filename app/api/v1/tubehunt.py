@@ -372,6 +372,13 @@ async def scrape_channels_async(request: ScrapeChannelsRequest = None) -> JobSta
         if request is None:
             request = ScrapeChannelsRequest()
 
+        # DEBUG: Log dos dados recebidos
+        logger.info(f"📥 Dados recebidos no /scrape-channels:")
+        logger.info(f"  - username: {request.username}")
+        logger.info(f"  - scrape_url: {request.scrape_url}")
+        logger.info(f"  - wait_time: {request.wait_time}")
+        logger.info(f"  - webhook_url: {request.webhook_url}")
+
         # Credenciais
         username = request.username or settings.user
         password = request.password or settings.password
